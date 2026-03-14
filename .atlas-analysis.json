@@ -1,0 +1,135 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Yoyo Lang",
+  "projectDescription": "An embeddable, JIT-compiled, memory-safe scripting language for C++20 applications.",
+  "theme": "aspen",
+  "primaryColor": "#7C3AED",
+  "lightColor": "#A78BFA",
+  "darkColor": "#4C1D95",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "building"
+            ]
+          },
+          {
+            "group": "Language Reference",
+            "pages": [
+              "language/syntax",
+              "language/types",
+              "language/functions",
+              "language/classes-and-structs",
+              "language/unions",
+              "language/enums",
+              "language/generics",
+              "language/interfaces",
+              "language/memory-model",
+              "language/optionals-and-results",
+              "language/operator-overloading",
+              "language/macros",
+              "language/modules"
+            ]
+          },
+          {
+            "group": "C++ Integration",
+            "pages": [
+              "integration/overview",
+              "integration/embedding",
+              "integration/app-modules",
+              "integration/calling-functions",
+              "integration/fibers-and-async",
+              "integration/backends"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Engine",
+            "pages": [
+              "api/engine",
+              "api/llvm-engine",
+              "api/yvm-engine"
+            ]
+          },
+          {
+            "group": "Modules",
+            "pages": [
+              "api/module-base",
+              "api/app-module",
+              "api/result"
+            ]
+          },
+          {
+            "group": "Runtime",
+            "pages": [
+              "api/runtime",
+              "api/fiber"
+            ]
+          },
+          {
+            "group": "Parsing & IR",
+            "pages": [
+              "api/parser",
+              "api/scanner",
+              "api/ir-generator",
+              "api/type-system"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "JIT compilation via LLVM backend and custom YVM bytecode backend",
+    "Borrow checker for memory safety without garbage collection overhead",
+    "Optional garbage-collected references (gcnew / ^T) for shared ownership",
+    "Statically typed with type inference and generic type parameters",
+    "Operator overloading and interface (trait) system",
+    "Coroutine-based fiber runtime for lightweight async execution",
+    "Embeddable C++20 library with a clean host API for calling C++ functions from Yoyo and vice versa",
+    "String interpolation (${expr} syntax)",
+    "Sum types (unions), product types (structs/classes), optional and result types",
+    "Macro system for compile-time code generation"
+  ],
+  "publicApiSurface": [
+    "Yoyo::Engine",
+    "Yoyo::LLVMEngine",
+    "Yoyo::YVMEngine",
+    "Yoyo::ModuleBase",
+    "Yoyo::LLVMAppModule",
+    "Yoyo::YVMAppModule",
+    "Yoyo::Runtime",
+    "Yoyo::Fiber",
+    "Yoyo::Parser",
+    "Yoyo::Scanner",
+    "Yoyo::IRGenerator",
+    "Yoyo::Type",
+    "Yoyo::Result (enum)",
+    "Engine::execute()",
+    "Engine::viewString(void*)",
+    "YVMEngine::addModule(name, source)",
+    "YVMEngine::addAppModule(name)",
+    "YVMEngine::compile()",
+    "YVMEngine::prepareForExecution()",
+    "YVMEngine::createFiber(FunctionTy)",
+    "YVMEngine::findFunction(ModuleBase*, name)",
+    "YVMAppModule::addFunction(sig_str, func_ptr, name)",
+    "YVMAppModule::addEnum(name, values)",
+    "YVMAppModule::addClass(name, variables, ownership, block_hash)",
+    "LLVMEngine::addModule(name, source)",
+    "LLVMEngine::addAppModule(name)",
+    "LLVMEngine::compile()",
+    "LLVMEngine::addStaticLibrary(path)",
+    "LLVMEngine::addDynamicLibrary(path)"
+  ]
+}
