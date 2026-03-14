@@ -1,0 +1,182 @@
+---
+title: "Memory model"
+description: "Ownership, move semantics, borrowing, the borrow checker, and GC references in Yoyo."
+---
+
+Yoyo enforces memory safety through a combination of **ownership** (compile-time move semantics), **borrowing** (checked references), and **GC references** (heap-allocated, garbage-collected pointers). There is no manual `free`, no null-pointer dereference, and no use-after-free — these are ruled out by the type system and borrow checker before any code runs.
+
+## Ownership
+
+Every value has exactly one **owner** — the variable binding that holds it. When the owner goes out of scope, the value is dropped automatically.
+
+```yoyo
+main: fn = {
+    s: str = "hello";
+    // s owns the string
+}   // s is dropped here
+```
+
+### Stack allocation by default
+
+All values are stack-allocated unless you explicitly request heap allocation with `gcnew`. Structs, tuples, arrays, and scalars all live on the stack.
+
+### Move semantics
+
+Passing a value to a function or assigning it to another variable **moves** ownership — the original binding is no longer valid:
+
+```yoyo
+consume: fn(val: str) = {
+    // val is owned inside this function
+}   // val is dropped here
+
+main: fn = {
+    s: str = "hello";
+    consume(s);  // s is moved into consume
+    // s is no longer accessible here
+}
+```
+
+## Borrowing
+
+To use a value without transferring ownership, **borrow** it with `&` (immutable) or `&mut` (mutable).
+
+<Tabs>
+  <Tab title="Immutable borrow">
+```yoyo
+print_len: fn(s: &str) = {
+    // s is a read-only reference; the caller still owns the string
+    app::print(s);
+}
+
+main: fn = {
+    text: str = "world";
+    print_len(&text);   // borrow text
+    // text is still valid here
+}
+```
+  </Tab>
+  <Tab title="Mutable borrow">
+```yoyo
+increment: fn(n: &mut i32) = {
+    *n = *n + 1;
+}
+
+main: fn = {
+    x: mut i32 = 41;
+    increment(&mut x);
+    // x is now 42
+}
+```
+  </Tab>
+</Tabs>
+
+### Borrow checker rules
+
+The borrow checker enforces two core invariants:
+
+1. **No aliased mutable borrows** — while a `&mut T` exists, no other reference (mutable or immutable) to the same value may be active.
+2. **Borrows don't outlive their owner** — a reference cannot be stored in a place that lives longer than the value it points to.
+
+Violations are caught at compile time and reported as errors.
+
+## How the borrow checker works
+
+Internally, Yoyo's borrow checker models each reference as belonging to a **domain** — a lifetime region that tracks which values a reference may point to.
+
+```
+Domain{ name: "'?1" }   // a fresh variable domain created for a new reference
+Domain{ name: "null" }  // the null domain — safe to read, panics on deref
+```
+
+Domains flow through an SSA-form control flow graph. The checker inserts **domain subset constraints** and **domain dependence edges** as it lowers each statement. After all constraints are collected, a fixed-point pointer analysis determines whether any reference in the function could simultaneously alias a mutable path — if so, compilation fails.
+
+<Info>
+The two sentinel domains are `'?`-prefixed (variable domains, unresolved) and `null` (the null domain). A reference whose domain resolves only to `null` is safe — it either holds `null` or a value whose lifetime is unrestricted.
+</Info>
+
+## GC references — `^T`
+
+GC references are heap-allocated, garbage-collected pointers. Create them with `gcnew`:
+
+```yoyo
+main: fn = {
+    b: i32 = 10;
+    a: ^i32 = gcnew b;   // copies b onto the GC heap, a is a ^i32
+}
+```
+
+`gcnew expr` evaluates `expr`, heap-allocates a copy, and returns a `^T`.
+
+### GC references and mutability
+
+A `^T` can be passed as `&T` or `&mut T`. However, the borrow checker still enforces the no-aliased-mutable-borrows rule at runtime for GC references — attempting to produce two simultaneous `&mut T` borrows from the same `^T` triggers a panic:
+
+```yoyo
+func: fn(x: &mut i32, y: &mut i32) = return;
+
+main: fn = {
+    b: i32 = 10;
+    a: ^i32 = gcnew b;
+    test::print(&"before panic");
+    func(a, a);            // aliased &mut — panics at runtime
+    test::print(&"after panic"); // not reached
+}
+```
+
+<Warning>
+Aliased mutable borrows from GC references cannot always be detected at compile time. The borrow checker emits a runtime check for GC-backed references, and the program panics if the check fails.
+</Warning>
+
+### GC references in recursive data structures
+
+`^T` is the idiomatic way to build recursive types, because the size of the inner node is finite:
+
+```yoyo
+Node: struct::<T> = {
+    data: T,
+    next: (^Node::<T>)?   // optional GC pointer — null or a heap-allocated Node
+}
+```
+
+`(^Node::<T>)?` is an optional GC reference: the node either has a next node on the heap or holds `null`.
+
+## Reference types at a glance
+
+| Type | Semantics | Created with |
+|------|-----------|--------------|
+| `T` | Owned value, stack-allocated | literal / constructor |
+| `&T` | Immutable borrow | `&expr` |
+| `&mut T` | Mutable borrow | `&mut expr` |
+| `^T` | GC-managed heap reference | `gcnew expr` |
+| `(^T)?` | Optional GC reference (nullable) | `gcnew expr` or `null` |
+
+## Ownership in `struct:&` types
+
+The `struct:&` modifier marks a type as **reference-semantic** — values are implicitly treated as borrows rather than owned copies. This is used for iterator adaptors that must hold a reference to an external collection without taking ownership:
+
+```yoyo
+LinkedListIterator: struct:&::<T> impl core::Iterator::<&T> = {
+    curr: (^Node::<T>)?,
+    impl core::Iterator::<&T> {
+        next: fn (&mut this) -> (&T)? = {
+            if |node| (this.curr) {
+                this.curr = node.next;
+                return &node.data;
+            }
+            else return null;
+        }
+    }
+}
+```
+
+<AccordionGroup>
+  <Accordion title="Domain variable names">
+    In compiler diagnostics you may see identifiers like `'?3` or `'?12`. These are **domain variables** — internal names the borrow checker assigns to the lifetime region of a particular reference. When a domain variable cannot be resolved to a concrete owned value (because a reference would outlive its owner), the compiler emits a borrow error referencing that domain.
+  </Accordion>
+  <Accordion title="Drop order">
+    Values are dropped in reverse declaration order at the end of each lexical scope. If a type has a destructor (declared via a special destructor name in the class), it is called before the memory is reclaimed.
+  </Accordion>
+  <Accordion title="No GC pauses for stack values">
+    The garbage collector only manages `^T` heap objects. Stack values and borrowed references are completely outside the GC and are cleaned up deterministically at the end of their scope — there are no GC pauses for ordinary code that does not use `gcnew`.
+  </Accordion>
+</AccordionGroup>

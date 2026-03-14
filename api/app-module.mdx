@@ -1,0 +1,229 @@
+---
+title: "App modules"
+description: "Register native C++ functions, enums, and classes with Yoyo via YVMAppModule and LLVMAppModule."
+---
+
+App modules are the bridge between C++ and Yoyo. You register native functions, enums, and class layouts with an app module, then import the module from Yoyo source with its registered name.
+
+Two implementations exist — one per backend:
+
+| Class | Backend | Header |
+|---|---|---|
+| `YVMAppModule` | `YVMEngine` | `yoyo/yvm/app_module.h` |
+| `LLVMAppModule` | `LLVMEngine` | `yoyo/llvm/app_module.h` |
+
+Both expose the same three public methods and identical semantics.
+
+<Info>
+  Obtain an app module by calling `engine.addAppModule("name")` on the engine — never construct one directly.
+</Info>
+
+## `addFunction`
+
+Registers a native C++ function pointer so Yoyo code can call it.
+
+```cpp
+template<typename R, typename... Args>
+Result addFunction(
+    std::string sig_str,
+    R(*func)(Args...),
+    std::string name);
+```
+
+<ParamField path="sig_str" type="std::string" required>
+  A Yoyo function signature string that describes the parameter and return types. See [Signature string format](#signature-string-format) below.
+</ParamField>
+
+<ParamField path="func" type="R(*)(Args...)" required>
+  A plain C function pointer. Lambdas work if they are non-capturing (they convert to a function pointer).
+</ParamField>
+
+<ParamField path="name" type="std::string" required>
+  The name Yoyo source uses to call this function, qualified with the module name: `module::name`.
+</ParamField>
+
+**Returns** a [`Result`](/api/result) value indicating success or the specific validation error.
+
+### Signature string format
+
+The signature string is a Yoyo function signature **without** a name or the `fn` keyword. It uses the same syntax as Yoyo source.
+
+```
+( param_list ) -> return_type
+```
+
+- Parameters are separated by commas.
+- Each parameter is written as `name: type` or `: type` (anonymous).
+- The return type follows `->`. Omit the `->` clause entirely to mean `-> void`.
+- Use `\` to separate the ok-type from the error-type in a result type: `-> i32 \ str`.
+
+**Yoyo primitive types:**
+
+| Yoyo type | C++ type |
+|---|---|
+| `i8` | `int8_t` |
+| `i16` | `int16_t` |
+| `i32` | `int32_t` |
+| `i64` | `int64_t` |
+| `u8` | `uint8_t` |
+| `u16` | `uint16_t` |
+| `u32` | `uint32_t` |
+| `u64` | `uint64_t` |
+| `f32` | `float` |
+| `f64` | `double` |
+| `bool` | `bool` |
+| `&str` | `void*` (Yoyo string, read with `Engine::viewString`) |
+| `str` | `void*` (out-pointer for SRET, see below) |
+
+**Examples:**
+
+```cpp
+// No parameters, returns i32
+app->addFunction("() -> i32", my_fn, "get_value");
+
+// One &str parameter, returns i32
+app->addFunction("(x: &str) -> i32", print_fn, "print");
+
+// Two parameters, no return value
+app->addFunction("(x: bool, y: &str) -> void", assert_fn, "assert");
+
+// SRET return (str is a struct type): C++ function takes void* output pointer
+app->addFunction("() -> str", get_string_fn, "get_string");
+
+// Result type with backslash-escaped in a raw string
+app->addFunction("-> [i64; 10] \\\\ str",
+    static_cast<void(*)(void*)>([](void* out) {}), "return_result");
+
+// Static array parameter
+app->addFunction("(x: &[i32; 10]) -> void", check_array_fn, "check_array");
+```
+
+### Parameter count and SRET
+
+The template validates that the number of C++ function parameters matches the signature at registration time.
+
+When a return type requires struct-return (SRET) — any non-primitive type such as `str`, structs, or arrays — the calling convention inserts an extra hidden output pointer as the **first** C++ parameter. In this case:
+
+- The C++ `R` must be `void`.
+- The first `Args` must be `void*` (the output buffer pointer).
+- The parameter count check adds 1 to the signature parameter count.
+
+<Warning>
+  If the C++ parameter count does not match `sig.parameters.size() + (should_sret ? 1 : 0)`, `addFunction` returns `Result::ParameterCountMismatch` and the function is **not** registered.
+</Warning>
+
+**SRET example — returning a `str`:**
+
+```cpp
+// Yoyo str is a {char*, size, capacity} struct → SRET
+void get_string(void* out) {
+    struct YoyoString { char* text; uint64_t size; uint64_t capacity; };
+    auto s = reinterpret_cast<YoyoString*>(out);
+    s->text     = static_cast<char*>(malloc(15));
+    s->size     = 14;
+    s->capacity = 15;
+    strcpy(s->text, "Hello from c++");
+}
+
+// Signature has 0 explicit params; SRET adds 1 → C++ takes exactly 1 param
+app->addFunction("() -> str", get_string, "get_string");
+```
+
+## `addEnum`
+
+Registers a C++ integer enum so Yoyo code can use it as a named enum type.
+
+```cpp
+Result addEnum(
+    std::string enum_name,
+    std::unordered_map<std::string, int32_t> values);
+```
+
+<ParamField path="enum_name" type="std::string" required>
+  The name Yoyo source uses for this enum type.
+</ParamField>
+
+<ParamField path="values" type="std::unordered_map&lt;std::string, int32_t&gt;" required>
+  Map from variant name to integer value. All values must be unique; otherwise `Result::DuplicateEnumValue` is returned.
+</ParamField>
+
+**Returns** a [`Result`](/api/result).
+
+**Example:**
+
+```cpp
+app->addEnum("Direction", {
+    {"North", 0},
+    {"South", 1},
+    {"East",  2},
+    {"West",  3},
+});
+```
+
+## `addClass`
+
+Registers a C++ struct/class layout so Yoyo can pass instances across the boundary.
+
+```cpp
+Result addClass(
+    std::string class_name,
+    std::vector<ClassVariable> variables,
+    Ownership sh,
+    std::string block_hash);
+```
+
+<ParamField path="class_name" type="std::string" required>
+  The name exposed to Yoyo source.
+</ParamField>
+
+<ParamField path="variables" type="std::vector&lt;ClassVariable&gt;" required>
+  Ordered list of field descriptors describing the C++ struct layout.
+</ParamField>
+
+<ParamField path="sh" type="Ownership" required>
+  Ownership semantics: controls whether Yoyo treats the class as value-owned, reference-counted, or GC-managed.
+</ParamField>
+
+<ParamField path="block_hash" type="std::string" required>
+  The block hash string for the class's scope, used for symbol resolution.
+</ParamField>
+
+**Returns** a [`Result`](/api/result).
+
+## Full example
+
+```cpp
+#include <yoyo/yvm/yvm_engine.h>
+#include <yoyo/yvm/app_module.h>
+
+static int32_t native_print(void* str) {
+    std::cout << Yoyo::Engine::viewString(str) << '\n';
+    return 0;
+}
+
+static void native_assert(bool cond, void* msg) {
+    if (!cond) {
+        std::cerr << "Assertion failed: "
+                  << Yoyo::Engine::viewString(msg) << '\n';
+        std::terminate();
+    }
+}
+
+Yoyo::YVMAppModule* setupTestModule(Yoyo::YVMEngine& engine) {
+    auto mod = engine.addAppModule("test");
+
+    auto r1 = mod->addFunction("(x: &str) -> i32",  native_print,  "print");
+    auto r2 = mod->addFunction("(x: bool, y: &str) -> void", native_assert, "assert");
+
+    assert(r1 == Yoyo::Result::Success);
+    assert(r2 == Yoyo::Result::Success);
+    return mod;
+}
+```
+
+## See also
+
+- [`Result`](/api/result) — error codes returned by all app module methods
+- [`YVMEngine`](/api/yvm-engine) — engine that owns `YVMAppModule`
+- [`LLVMEngine`](/api/llvm-engine) — engine that owns `LLVMAppModule`
+- [`ModuleBase`](/api/module-base) — base module interface

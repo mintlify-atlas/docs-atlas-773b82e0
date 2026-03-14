@@ -1,0 +1,204 @@
+---
+title: Parser
+description: Recursive-descent parser that converts Yoyo source text into an AST.
+---
+
+`Yoyo::Parser` is the main entry point for converting Yoyo source text into an abstract syntax tree (AST). It owns a `Scanner` internally and exposes granular parse methods for each syntactic category.
+
+## Class definition
+
+```cpp
+#include <yoyo/parser.h>
+
+namespace Yoyo {
+    class YOYO_API Parser {
+    public:
+        explicit Parser(std::string& source);
+
+        std::unique_ptr<ASTNode>       parseExpressionOrDeclaration();
+        std::unique_ptr<Expression>    parseExpression(uint32_t precedence);
+        std::unique_ptr<Statement>     parseDeclaration();
+        std::unique_ptr<Statement>     parseStatement();
+        std::vector<std::unique_ptr<Statement>> parseProgram();
+
+        std::optional<Type>            parseType(uint32_t precedence);
+        std::optional<FunctionSignature> parseFunctionSignature();
+        std::optional<GenericClause>   parseGenericClause();
+        std::vector<Attribute>         parseAttributeList();
+
+        bool failed() const;
+        void error(std::string message, std::optional<Token> tk);
+        const Scanner& getScanner() const;
+        const std::string& getSource() const;
+    };
+}
+```
+
+## Constructor
+
+### `Parser(std::string& source)`
+
+```cpp
+explicit Parser(std::string& source);
+```
+
+Constructs a parser over the given source string. The parser holds a reference to `source` — the string must remain alive for the lifetime of the `Parser`.
+
+<ParamField path="source" type="std::string&" required>
+  The complete Yoyo source text to parse. Must outlive the `Parser` object.
+</ParamField>
+
+## Parsing methods
+
+### `parseProgram()`
+
+```cpp
+std::vector<std::unique_ptr<Statement>> parseProgram();
+```
+
+Parses a complete Yoyo source file and returns all top-level statements as an owned list. This is the primary entry point when compiling a module.
+
+After calling `parseProgram()`, check `failed()` to detect any parse errors before passing the AST to an IR generator.
+
+### `parseExpressionOrDeclaration()`
+
+```cpp
+std::unique_ptr<ASTNode> parseExpressionOrDeclaration();
+```
+
+Parses a single item that may be either an expression or a declaration. Useful for REPL-style evaluation where the distinction is not known upfront.
+
+### `parseExpression(uint32_t precedence)`
+
+```cpp
+std::unique_ptr<Expression> parseExpression(uint32_t precedence);
+```
+
+Parses a single expression using a Pratt (top-down operator precedence) parser. Pass `0` to parse at the lowest precedence (consuming as much as possible).
+
+<ParamField path="precedence" type="uint32_t" required>
+  Minimum binding power. Operators with lower precedence than this value stop the parse.
+</ParamField>
+
+### `parseDeclaration()`
+
+```cpp
+std::unique_ptr<Statement> parseDeclaration();
+```
+
+Parses a single top-level or local declaration (function, class, variable, etc.).
+
+### `parseStatement()`
+
+```cpp
+std::unique_ptr<Statement> parseStatement();
+```
+
+Parses a single statement inside a function body (return, while, for, expression statement, etc.).
+
+### `parseType(uint32_t precedence)`
+
+```cpp
+std::optional<Type> parseType(uint32_t precedence);
+```
+
+Parses a type expression. Returns `std::nullopt` if the current token cannot start a type.
+
+<ParamField path="precedence" type="uint32_t" required>
+  Minimum operator precedence for type operators (e.g. `|` for union types).
+</ParamField>
+
+### `parseFunctionSignature()`
+
+```cpp
+std::optional<FunctionSignature> parseFunctionSignature();
+```
+
+Parses a function signature of the form `(param: Type, ...) -> ReturnType`. Returns `std::nullopt` on failure.
+
+<Note>
+`parseFunctionSignature()` is used by `AppModule::addFunction` internally to parse the C-string signature you pass when registering a native function.
+</Note>
+
+### `parseGenericClause()`
+
+```cpp
+std::optional<GenericClause> parseGenericClause();
+```
+
+Parses the generic parameter list `::<T, U>` that follows a generic declaration.
+
+### `parseAttributeList()`
+
+```cpp
+std::vector<Attribute> parseAttributeList();
+```
+
+Parses zero or more `#(...)` attribute annotations that precede a declaration.
+
+## Error handling
+
+### `failed()`
+
+```cpp
+bool failed() const;
+```
+
+Returns `true` if any parse error was recorded during the current parse pass. Always check this after `parseProgram()` before using the resulting AST.
+
+### `error(std::string message, std::optional<Token> tk)`
+
+```cpp
+void error(std::string message, std::optional<Token> tk);
+```
+
+Records a parse error and sets the internal `has_error` flag. Can be called from parselet code to report a problem at a specific token.
+
+<ParamField path="message" type="std::string" required>
+  Human-readable description of the error.
+</ParamField>
+
+<ParamField path="tk" type="std::optional<Token>">
+  The token at which the error occurred, used to populate source location info. Pass `std::nullopt` if no specific token is available.
+</ParamField>
+
+## Accessors
+
+### `getScanner()`
+
+```cpp
+const Scanner& getScanner() const;
+```
+
+Returns a read-only reference to the internal `Scanner`. Useful for inspecting the current position after parsing.
+
+### `getSource()`
+
+```cpp
+const std::string& getSource() const;
+```
+
+Returns a read-only reference to the source string the parser was constructed with.
+
+## Example
+
+```cpp
+#include <yoyo/parser.h>
+
+std::string source = R"(
+main: fn -> i32 = {
+    return 42;
+})";
+
+Yoyo::Parser parser(source);
+auto statements = parser.parseProgram();
+
+if (parser.failed()) {
+    // handle parse errors
+}
+```
+
+## See also
+
+- [Scanner](/api/scanner) — tokeniser used internally by Parser
+- [IRGenerator](/api/ir-generator) — consumes the AST produced by Parser

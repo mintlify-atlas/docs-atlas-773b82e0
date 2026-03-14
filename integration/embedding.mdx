@@ -1,0 +1,185 @@
+---
+title: "Embedding Yoyo"
+description: "Step-by-step guide to adding Yoyo to a C++20 project with Meson."
+---
+
+This page walks through a complete, minimal integration. Every code snippet is drawn from the engine's own test suite (`tests/ir_gen_test.cpp`).
+
+## Prerequisites
+
+- C++20-capable compiler (GCC 12+, Clang 15+, MSVC 19.34+)
+- [Meson](https://mesonbuild.com) build system
+- Yoyo built with the `yvm` or `llvm` executor option (see [Backends](/integration/backends))
+
+## Add Yoyo to your Meson project
+
+Declare `yoyo-lang` as a Meson subproject or wrap dependency, then link against it:
+
+```ini meson.build
+yoyo_proj = subproject('yoyo-lang')
+yoyo_dep  = yoyo_proj.get_variable('yoyo_dep')
+
+executable('my_app', 'main.cpp', dependencies: [yoyo_dep])
+```
+
+<Note>
+The `yoyo_dep` dependency already carries the required include paths (`include/yoyo`) and transitive dependencies (libffi for YVM, LLVM for the LLVM backend).
+</Note>
+
+## Full integration walkthrough
+
+<Steps>
+  <Step title="Include the engine and app module headers">
+    Choose the headers that match your selected backend.
+
+    <Tabs>
+      <Tab title="YVM backend">
+        ```cpp
+        #include <yvm/yvm_engine.h>
+        #include <yvm/app_module.h>
+        ```
+      </Tab>
+      <Tab title="LLVM backend">
+        ```cpp
+        #include <llvm/llvm_engine.h>
+        #include <llvm/app_module.h>
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Create an engine">
+    ```cpp
+    Yoyo::YVMEngine engine;
+    ```
+
+    The engine is the central object for the lifetime of the embedding. Construct it once and reuse it across multiple scripts.
+  </Step>
+
+  <Step title="Register C++ functions via an AppModule">
+    An `AppModule` is the bridge between C++ and Yoyo. Give it a name — scripts will call your functions as `<module_name>::<function_name>`.
+
+    ```cpp
+    auto app = engine.addAppModule("test");
+    app->addFunction("(x: &str) -> i32",   func,        "print");
+    app->addFunction("(x: bool, y: &str) -> void", test_assert, "assert");
+    ```
+
+    See [App modules](/integration/app-modules) for the full registration API.
+  </Step>
+
+  <Step title="Load Yoyo source">
+    Pass the module name and source code as a `std::string`:
+
+    ```cpp
+    auto mod = engine.addModule("source", source_code);
+    ```
+
+    `addModule` returns a `ModuleBase*` you can use later to look up functions.
+  </Step>
+
+  <Step title="Add native libraries (optional)">
+    If your Yoyo scripts call into DLLs or shared libraries at the native level, register them before compiling:
+
+    ```cpp
+    engine.addDynamicLibrary("c_file.dll");
+    ```
+  </Step>
+
+  <Step title="Compile">
+    ```cpp
+    bool ok = engine.compile();
+    ```
+
+    `compile()` parses all loaded modules, runs the type checker and borrow checker, and generates IR. It returns `true` on success. Errors are reported to stderr.
+  </Step>
+
+  <Step title="Prepare for execution">
+    ```cpp
+    engine.prepareForExecution();
+    ```
+
+    This step JIT-compiles all IR to native code and links the modules together. Call it exactly once, after `compile()`.
+  </Step>
+
+  <Step title="Find a function">
+    Functions are looked up by their mangled name, which is the module hash concatenated with the function name:
+
+    ```cpp
+    std::string func_name = mod->module_hash + "main";
+    auto fn = engine.findFunction(mod, func_name).value();
+    ```
+
+    `findFunction` returns `std::optional<FunctionTy>`. Check for `has_value()` before calling `.value()`.
+  </Step>
+
+  <Step title="Create a fiber and pass parameters">
+    ```cpp
+    auto fib = engine.createFiber(fn);
+
+    // Write the input argument (cast to the expected type)
+    *(int32_t*)fib.parameters = 42;
+    ```
+
+    `fib.parameters` is a raw pointer to the argument struct. Cast it to the appropriate type for the function's first parameter.
+  </Step>
+
+  <Step title="Run the scheduler">
+    ```cpp
+    engine.execute();
+    ```
+
+    `execute()` drives the cooperative scheduler until all queued fibers have finished. To read a return value afterward, use `fib.get<T>()`.
+  </Step>
+</Steps>
+
+## Complete minimal example
+
+```cpp
+#include <yvm/yvm_engine.h>
+#include <yvm/app_module.h>
+#include <iostream>
+#include <string_view>
+
+// C++ function exposed to Yoyo
+int32_t host_print(void* arg) {
+    std::cout << Yoyo::Engine::viewString(arg) << '\n';
+    return 0;
+}
+
+int main() {
+    Yoyo::YVMEngine engine;
+
+    // 1. Register native functions
+    auto app = engine.addAppModule("app");
+    app->addFunction("(x: &str) -> i32", host_print, "print");
+
+    // 2. Load Yoyo source
+    std::string source = R"(
+main: fn = {
+    app::print(&"Hello from Yoyo!");
+}
+)";
+    auto mod = engine.addModule("main", source);
+
+    // 3. Compile and link
+    engine.compile();
+    engine.prepareForExecution();
+
+    // 4. Find the entry point and run it
+    auto fn  = engine.findFunction(mod, mod->module_hash + "main").value();
+    auto fib = engine.createFiber(fn);
+    engine.execute();
+}
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="App modules" icon="plug" href="/integration/app-modules">
+    Learn all the ways to expose C++ code: functions, enums, and classes.
+  </Card>
+  <Card title="Calling functions" icon="arrow-right" href="/integration/calling-functions">
+    Pass parameters to Yoyo functions and read back return values.
+  </Card>
+</CardGroup>

@@ -1,0 +1,118 @@
+---
+title: Macros
+description: Compile-time macro declarations and invocations in Yoyo.
+---
+
+Yoyo macros run at **compile time**, before IR generation. They operate directly on AST nodes and produce new AST nodes or values that are spliced into the program. Macros are first-class language features — they are declared like functions and invoked with a dedicated syntax.
+
+## Macro Declaration
+
+A macro is declared with the `macro` keyword in the type position:
+
+```yoyo
+name: macro(param: ParamType) = {
+    // compile-time body
+}
+```
+
+Macros may accept one or two parameters. The second parameter is optional:
+
+```yoyo
+name: macro(left: Expr, right: Expr) = {
+    // two-parameter macro
+}
+```
+
+The parameter type determines what the caller passes. The supported parameter types are:
+
+| Type | Description |
+|------|-------------|
+| `str` | A string literal value |
+| `Expr` | Any expression AST node |
+| `Stat` | Any statement AST node |
+| `int` | A compile-time integer constant |
+| `float` | A compile-time floating-point constant |
+| `bool` | A compile-time boolean constant |
+| `null` | The null literal |
+| `token` | A raw lexer token |
+
+<Info>
+Macro bodies are evaluated by the `MacroEvaluator` before the IR generator processes the surrounding code. This means macros cannot reference runtime values — only compile-time constants and the AST nodes passed as arguments.
+</Info>
+
+---
+
+## Macro Body
+
+Inside a macro body the same control-flow constructs available in regular functions are supported: variable declarations, `while` loops, `for` loops, `if` / conditional extraction, `return`, `break`, and `continue`.
+
+The body receives its parameters as named bindings whose runtime type corresponds to the parameter type table above. The macro produces a value by executing a `return` statement.
+
+---
+
+## Macro Invocation
+
+Macros are invoked using a call-like syntax. The macro name is followed by the argument in parentheses:
+
+```yoyo
+result := macro_name(argument);
+```
+
+For two-parameter macros a second argument is supplied:
+
+```yoyo
+result := macro_name(left_arg, right_arg);
+```
+
+A `MacroInvocation` expression node carries:
+- the macro name expression
+- the `left` argument — either a single expression or a raw token sequence
+- an optional `right` argument expression
+
+The evaluated result of the macro replaces the invocation site in the AST.
+
+<Note>
+Macro invocations are expressions, so they can appear anywhere an expression is expected — inside variable initialisers, function arguments, or condition positions.
+</Note>
+
+---
+
+## Compile-Time Evaluation
+
+The `MacroEvaluator` processes the macro body using the following internal object types:
+
+```
+monostate   — no value (null)
+str         — owned string
+ASTNode     — owned AST node (Expr or Stat)
+ASTNode*    — reference to an existing AST node
+bool        — boolean
+double      — floating-point
+int64_t     — integer
+OwnedToken  — a token with its text owned as a string
+TokSeq      — a sequence of tokens for re-parsing
+vector      — a list of macro objects
+function    — a built-in callable
+```
+
+Macros can read and transform any `Expr` or `Stat` passed to them and return a new node that is inserted back into the AST.
+
+<Warning>
+Because macros operate on AST nodes they are inherently syntactic. Type information is not available inside a macro body — type-level decisions belong in generic functions or interfaces.
+</Warning>
+
+---
+
+## Example: Two-Argument Macro
+
+```yoyo
+// Macro that wraps an expression in a debug print then returns it
+debug_wrap: macro(label: str, value: Expr) = {
+    // compile-time body emits: { print(label); value }
+    return value;
+}
+
+main: fn = {
+    x := debug_wrap("computed", 1 + 2);
+}
+```

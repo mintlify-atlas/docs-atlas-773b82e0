@@ -1,0 +1,122 @@
+---
+title: Runtime
+description: Cooperative multitasking scheduler that drives Yoyo coroutines.
+---
+
+The `Yoyo::Runtime` struct is the central scheduler for all Yoyo coroutines. It implements cooperative multitasking using [minicoro](https://github.com/edubart/minicoro) (`mco_coro`) coroutines. You typically create one runtime per application and pass it to engines or fibers.
+
+<Note>
+Yoyo uses cooperative scheduling — coroutines must yield control explicitly. The runtime never preempts a running coroutine.
+</Note>
+
+## Struct definition
+
+```cpp
+#include <yoyo/runtime.h>
+
+namespace Yoyo {
+    struct YOYO_API Runtime {
+        std::vector<mco_coro*> routs;
+        std::vector<mco_coro*> dead_coros;
+        std::unordered_map<mco_coro*, bool> is_externally_owned;
+
+        using TimePoint = std::chrono::time_point<std::chrono::steady_clock>;
+        std::vector<std::pair<mco_coro*,
+            std::variant<mco_coro*, TimePoint, std::monostate>>> waiting;
+
+        void run();
+        void add_job(mco_coro*);
+        void release_job(mco_coro*);
+    };
+}
+```
+
+## Fields
+
+<ResponseField name="routs" type="std::vector<mco_coro*>">
+  All coroutines currently registered with the runtime, including those that are waiting or running.
+</ResponseField>
+
+<ResponseField name="dead_coros" type="std::vector<mco_coro*>">
+  Coroutines that have completed execution and are awaiting cleanup. The runtime frees them at the next scheduling opportunity.
+</ResponseField>
+
+<ResponseField name="is_externally_owned" type="std::unordered_map<mco_coro*, bool>">
+  Tracks ownership of each coroutine. When the value is `false`, the runtime owns the coroutine and will free it after it completes. When `true`, the caller is responsible for the coroutine's lifetime.
+
+  <Tip>
+  Use `Fiber::forget()` to transfer ownership to the runtime and set this flag to `false`.
+  </Tip>
+</ResponseField>
+
+<ResponseField name="waiting" type="std::vector<std::pair<mco_coro*, std::variant<mco_coro*, TimePoint, std::monostate>>>">
+  The wait queue. Each entry pairs a suspended coroutine with its wait condition.
+
+  <Expandable title="Wait condition variants">
+    <ResponseField name="mco_coro*" type="variant alternative">
+      The coroutine is waiting for another specific coroutine to finish.
+    </ResponseField>
+    <ResponseField name="TimePoint" type="variant alternative">
+      The coroutine is sleeping until `std::chrono::steady_clock` reaches this time point.
+    </ResponseField>
+    <ResponseField name="std::monostate" type="variant alternative">
+      The coroutine is ready to run immediately (no condition to wait on).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Methods
+
+### `run()`
+
+```cpp
+void run();
+```
+
+Drives the scheduler loop until all registered coroutines have completed. On each iteration the runtime:
+
+1. Checks the wait queue and promotes any coroutine whose condition is satisfied back into the active list.
+2. Resumes the next runnable coroutine.
+3. Cleans up any coroutines in `dead_coros`.
+
+Blocks the calling thread until the runtime has no more work to do.
+
+### `add_job(mco_coro*)`
+
+```cpp
+void add_job(mco_coro* coro);
+```
+
+Registers a new coroutine with the runtime and marks it as ready to run. The coroutine is added to `routs` and an entry is created in `is_externally_owned` (defaulting to `true`).
+
+<ParamField path="coro" type="mco_coro*" required>
+  A coroutine created with `mco_create`. Must not already be registered with this runtime.
+</ParamField>
+
+### `release_job(mco_coro*)`
+
+```cpp
+void release_job(mco_coro* coro);
+```
+
+Removes a coroutine from the runtime. If the runtime owns the coroutine (`is_externally_owned` is `false`), it also destroys and frees it. Called automatically by `Fiber`'s destructor.
+
+<ParamField path="coro" type="mco_coro*" required>
+  A coroutine previously registered via `add_job`.
+</ParamField>
+
+## Example
+
+```cpp
+#include <yoyo/runtime.h>
+
+Yoyo::Runtime rt;
+
+// Add a job and run to completion
+rt.add_job(my_coro);
+rt.run();
+```
+
+## See also
+
+- [Fiber](/api/fiber) — RAII handle for a single coroutine job

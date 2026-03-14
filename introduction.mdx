@@ -1,0 +1,130 @@
+---
+title: "Introduction"
+description: "An embeddable, JIT-compiled, memory-safe scripting language for C++20 applications."
+---
+
+# Yoyo Lang
+
+Yoyo is a statically typed, embeddable scripting language written in C++20. It is designed to be compiled with JIT execution directly inside your C++ application, providing a safe, expressive scripting surface without the overhead of a traditional interpreter.
+
+<Warning>
+  Yoyo is a research language and is currently far from production-ready. The implementation is under active development and many features are still being stabilised.
+</Warning>
+
+## Why Yoyo?
+
+<CardGroup cols={2}>
+  <Card title="JIT Compiled" icon="bolt">
+    Two backends are available: LLVM (for maximum performance) and the custom YVM bytecode engine (for lighter dependencies). Both compile Yoyo source to native code at runtime.
+  </Card>
+  <Card title="Memory Safe" icon="shield-check">
+    A borrow checker enforces ownership and lifetime rules at compile time, preventing use-after-free and data races without runtime overhead.
+  </Card>
+  <Card title="Embeddable" icon="puzzle-piece">
+    Drop Yoyo into any C++20 project via Meson. Expose C++ functions to scripts and call Yoyo functions from C++ with a clean, type-safe API.
+  </Card>
+  <Card title="Statically Typed" icon="code">
+    Full type inference means you rarely need annotations, but every expression has a known type at compile time, enabling precise error messages and fast code generation.
+  </Card>
+</CardGroup>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Generics" icon="layer-group">
+    Parametric types and functions with optional interface constraints (`impl` bounds) for zero-cost abstractions.
+  </Card>
+  <Card title="Sum Types" icon="code-branch">
+    First-class union types with exhaustive pattern matching via conditional extraction (`if |val| (expr)`).
+  </Card>
+  <Card title="Optional GC References" icon="recycle">
+    `gcnew` allocates garbage-collected heap objects (`^T`). Combine with borrow-checked stack values for flexible ownership.
+  </Card>
+  <Card title="Fiber Runtime" icon="arrows-spin">
+    Lightweight cooperative coroutines power async execution. Spawn fibers from C++ or Yoyo and drive them with the built-in runtime scheduler.
+  </Card>
+  <Card title="Operator Overloading" icon="calculator">
+    Define custom `+`, `*`, `[]`, and other operators for your types using the `operator:` declaration syntax.
+  </Card>
+  <Card title="Macros" icon="wand-magic-sparkles">
+    Compile-time macro system lets you manipulate AST nodes and generate code before IR generation.
+  </Card>
+</CardGroup>
+
+## Language at a glance
+
+```yoyo
+// All declarations share the form:  name: kind = value;
+Vector2: struct = {
+    x: f32, y: f32
+}
+
+// Operator overloading
+operator: *(a: Vector2, b: Vector2) -> f32 = {
+    return a.x * b.x + a.y * b.y;
+}
+
+// Generics with interface constraints
+print_iter: fn::<T: impl core::Iterator::<str>> (iter: T) = {
+    for (item in iter) {
+        app::print(&"item: ${item}");
+    }
+}
+
+// Optional types and conditional extraction
+find_first: fn::<T> (arr: &[T], pred: fn(&T) -> bool) -> T? = {
+    for (elem in arr) {
+        if (pred(elem)) return elem;
+    }
+    return null;
+}
+
+main: fn = {
+    v1 := Vector2{ .x = 3.0, .y = 4.0 };
+    v2 := Vector2{ .x = 1.0, .y = 2.0 };
+    dot := v1 * v2;
+    app::print(&"dot = ${dot}");
+}
+```
+
+## How it fits into your C++ application
+
+```cpp
+#include <yvm/yvm_engine.h>
+#include <yvm/app_module.h>
+
+int main() {
+    Yoyo::YVMEngine engine;
+
+    // Expose a C++ function to Yoyo scripts
+    auto app = engine.addAppModule("app");
+    app->addFunction("(msg: &str) -> void",
+        [](void* str) { 
+            std::cout << Yoyo::Engine::viewString(str) << "\n"; 
+        }, "print");
+
+    // Load and compile Yoyo source
+    auto mod = engine.addModule("main", source_code);
+    engine.compile();
+    engine.prepareForExecution();
+
+    // Create a fiber and run it
+    auto fn  = engine.findFunction(mod, "main::main").value();
+    auto fib = engine.createFiber(fn);
+    engine.execute();
+}
+```
+
+## Next steps
+
+<CardGroup cols={3}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Embed Yoyo in a C++ project and run your first script in minutes.
+  </Card>
+  <Card title="Building" icon="hammer" href="/building">
+    Build Yoyo from source with Meson and configure backend options.
+  </Card>
+  <Card title="Language Reference" icon="book" href="/language/syntax">
+    Dive into the full Yoyo language specification.
+  </Card>
+</CardGroup>

@@ -1,0 +1,238 @@
+---
+title: "ModuleBase"
+description: "Abstract base class for all Yoyo modules. Provides the symbol tables used by the compiler and runtime."
+---
+
+`Yoyo::ModuleBase` is the common interface for every module that an engine manages — both native C++ app modules and compiled Yoyo source modules. It holds all the symbol tables the compiler and runtime use to resolve names.
+
+```cpp
+#include <yoyo/module.h>
+```
+
+<Note>
+  You do not create `ModuleBase` instances directly. They are returned by `addModule` and `addAppModule` on the engine classes.
+</Note>
+
+## Class definition
+
+```cpp
+namespace Yoyo {
+    class ModuleBase {
+    public:
+        Engine* engine;
+        std::string module_hash;
+
+        std::unordered_map<std::string,
+            std::vector<FunctionDetails>>                                           functions;
+        std::unordered_map<std::string,
+            std::vector<std::pair<std::string,
+                std::unique_ptr<ClassDeclaration>>>>                                classes;
+        std::unordered_map<std::string,
+            std::vector<std::unique_ptr<UnionDeclaration>>>                         unions;
+        std::unordered_map<std::string,
+            std::vector<std::unique_ptr<GenericFunctionDeclaration>>>               generic_fns;
+        std::unordered_map<std::string,
+            std::vector<std::unique_ptr<InterfaceDeclaration>>>                     interfaces;
+        std::unordered_map<std::string,
+            std::vector<std::unique_ptr<GenericAliasDeclaration>>>                  generic_aliases;
+        std::unordered_map<std::string,
+            std::vector<std::unique_ptr<GenericInterfaceDeclaration>>>              generic_interfaces;
+        std::unordered_map<std::string,
+            std::unordered_map<std::string, Type>>                                  aliases;
+        std::unordered_map<std::string,
+            std::vector<std::unique_ptr<GenericClassDeclaration>>>                  generic_classes;
+        std::unordered_map<std::string,
+            std::vector<std::unique_ptr<EnumDeclaration>>>                          enums;
+        std::unordered_map<std::string,
+            std::vector<std::tuple<Type, std::string,
+                std::variant<Constant, ConstantDeclaration*>>>>                     constants;
+        std::unordered_map<std::string,
+            std::vector<std::unique_ptr<UnionDeclaration>>>                         generic_unions;
+        std::unordered_map<std::string,
+            std::vector<std::unique_ptr<MacroDeclaration>>>                         macros;
+
+        // Lookup helpers
+        std::pair<std::string, FunctionDetails*>
+            findFunction(const std::string& block, const std::string& name);
+        std::pair<std::string, GenericFunctionDeclaration*>
+            findGenericFn(const std::string& block, const std::string& name);
+        Type*
+            findAlias(const std::string& block, const std::string& name);
+        std::pair<std::string, EnumDeclaration*>
+            findEnum(const std::string& block, const std::string& name);
+        std::pair<std::string, UnionDeclaration*>
+            findUnion(const std::string& block, const std::string& name);
+        std::pair<std::string, std::pair<std::string,
+            std::unique_ptr<ClassDeclaration>>*>
+            findClass(const std::string& block, const std::string& name);
+        std::pair<std::string, std::tuple<Type, std::string,
+            std::variant<Constant, ConstantDeclaration*>>*>
+            findConst(const std::string& block, const std::string& name);
+        MacroDeclaration*
+            findMacro(const std::string& block, const std::string& name);
+    };
+}
+```
+
+## Core fields
+
+<ResponseField name="engine" type="Engine*">
+  Non-owning back-pointer to the engine that owns this module. Use this to call engine methods (e.g. `dynamic_cast<YVMEngine*>(mod->engine)`) from code that only holds a `ModuleBase*`.
+</ResponseField>
+
+<ResponseField name="module_hash" type="std::string">
+  A unique string prefix assigned to this module at compile time. All mangled symbol names in the module begin with this hash. Use it to construct the fully-qualified function names required by `findFunction` and `createFiber`.
+
+  ```cpp
+  std::string entry = mod->module_hash + "main";
+  auto fn = engine.findFunction(mod, entry);
+  ```
+</ResponseField>
+
+## Symbol table fields
+
+Each symbol table is an `unordered_map` keyed by **block path**. A block path is the dotted scope prefix within the module (for example `""` for the top-level scope, or `"MyStruct"` for names declared inside `MyStruct`).
+
+<ResponseField name="functions" type="unordered_map&lt;string, vector&lt;FunctionDetails&gt;&gt;">
+  All non-generic functions declared in the module, indexed by block path.
+</ResponseField>
+
+<ResponseField name="classes" type="unordered_map&lt;string, vector&lt;pair&lt;string, ClassDeclaration*&gt;&gt;&gt;">
+  All class (struct) declarations, indexed by block path. The inner `string` is the class's own hash.
+</ResponseField>
+
+<ResponseField name="unions" type="unordered_map&lt;string, vector&lt;UnionDeclaration*&gt;&gt;">
+  All union declarations.
+</ResponseField>
+
+<ResponseField name="generic_fns" type="unordered_map&lt;string, vector&lt;GenericFunctionDeclaration*&gt;&gt;">
+  Generic (template) function declarations awaiting monomorphisation.
+</ResponseField>
+
+<ResponseField name="interfaces" type="unordered_map&lt;string, vector&lt;InterfaceDeclaration*&gt;&gt;">
+  Interface declarations.
+</ResponseField>
+
+<ResponseField name="generic_aliases" type="unordered_map&lt;string, vector&lt;GenericAliasDeclaration*&gt;&gt;">
+  Generic type alias declarations.
+</ResponseField>
+
+<ResponseField name="aliases" type="unordered_map&lt;string, unordered_map&lt;string, Type&gt;&gt;">
+  Resolved (non-generic) type aliases. The outer key is block path; the inner key is the alias name.
+</ResponseField>
+
+<ResponseField name="generic_classes" type="unordered_map&lt;string, vector&lt;GenericClassDeclaration*&gt;&gt;">
+  Generic class (struct) declarations.
+</ResponseField>
+
+<ResponseField name="enums" type="unordered_map&lt;string, vector&lt;EnumDeclaration*&gt;&gt;">
+  Enum declarations.
+</ResponseField>
+
+<ResponseField name="constants" type="unordered_map&lt;string, vector&lt;tuple&lt;Type, string, variant&lt;Constant, ConstantDeclaration*&gt;&gt;&gt;&gt;">
+  Module-level and block-level compile-time constants. Each entry is a tuple of `(type, mangled_name, value_or_declaration)`.
+</ResponseField>
+
+<ResponseField name="macros" type="unordered_map&lt;string, vector&lt;MacroDeclaration*&gt;&gt;">
+  Macro declarations.
+</ResponseField>
+
+## Lookup methods
+
+All lookup methods take a `block` path and a `name`. The block path scopes the search; use `""` for top-level symbols. They return a pair whose first element is the resolved hash prefix and whose second is a pointer to the declaration (or `nullptr` / empty on failure).
+
+### `findFunction`
+
+```cpp
+std::pair<std::string, FunctionDetails*>
+    findFunction(const std::string& block, const std::string& name);
+```
+
+<ParamField path="block" type="std::string" required>
+  Scope block to search within. Pass `""` for top-level scope.
+</ParamField>
+
+<ParamField path="name" type="std::string" required>
+  Unqualified function name.
+</ParamField>
+
+**Returns** a pair of `(hash_prefix, FunctionDetails*)`. The pointer is `nullptr` when not found.
+
+### `findGenericFn`
+
+```cpp
+std::pair<std::string, GenericFunctionDeclaration*>
+    findGenericFn(const std::string& block, const std::string& name);
+```
+
+Same contract as `findFunction` but for generic function declarations.
+
+### `findAlias`
+
+```cpp
+Type* findAlias(const std::string& block, const std::string& name);
+```
+
+**Returns** a pointer to the resolved `Type`, or `nullptr` if the alias does not exist.
+
+### `findClass`
+
+```cpp
+std::pair<std::string, std::pair<std::string,
+    std::unique_ptr<ClassDeclaration>>*>
+    findClass(const std::string& block, const std::string& name);
+```
+
+**Returns** a pair of `(hash_prefix, entry*)` where `entry` holds the class hash and declaration.
+
+### `findEnum`
+
+```cpp
+std::pair<std::string, EnumDeclaration*>
+    findEnum(const std::string& block, const std::string& name);
+```
+
+### `findUnion`
+
+```cpp
+std::pair<std::string, UnionDeclaration*>
+    findUnion(const std::string& block, const std::string& name);
+```
+
+### `findMacro`
+
+```cpp
+MacroDeclaration* findMacro(const std::string& block, const std::string& name);
+```
+
+**Returns** a pointer to the macro declaration, or `nullptr`.
+
+### `findConst`
+
+```cpp
+std::pair<std::string, std::tuple<Type, std::string,
+    std::variant<Constant, ConstantDeclaration*>>*>
+    findConst(const std::string& block, const std::string& name);
+```
+
+**Returns** a pair of `(hash_prefix, constant_entry*)` where the tuple contains the constant's type, mangled name, and value.
+
+## Getting the engine from a module pointer
+
+```cpp
+// Downcast to access engine-specific APIs
+Yoyo::Fiber createFiberFor(
+    Yoyo::ModuleBase* mod, const std::string& fn_name)
+{
+    auto eng = dynamic_cast<Yoyo::YVMEngine*>(mod->engine);
+    auto fn  = eng->findFunction(mod, fn_name).value();
+    return eng->createFiber(fn);
+}
+```
+
+## See also
+
+- [`YVMAppModule`](/api/app-module) — native module for YVMEngine
+- [`LLVMAppModule`](/api/app-module) — native module for LLVMEngine
+- [`YVMEngine`](/api/yvm-engine) — engine that creates modules
+- [`LLVMEngine`](/api/llvm-engine) — LLVM engine that creates modules

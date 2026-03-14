@@ -1,0 +1,201 @@
+---
+title: "LLVMEngine"
+description: "JIT-compiled execution engine backed by LLVM ORC. Provides the highest runtime performance for production workloads."
+---
+
+`Yoyo::LLVMEngine` compiles Yoyo source to native machine code using the LLVM ORC JIT infrastructure. It inherits from [`Engine`](/api/engine) and adds LLVM-specific compilation and linking APIs.
+
+```cpp
+#include <yoyo/llvm/llvm_engine.h>
+```
+
+<Info>
+  `LLVMEngine` requires a build of Yoyo compiled with the LLVM backend enabled (`-DYOYO_USE_LLVM=ON`). If you need a lighter dependency, consider [`YVMEngine`](/api/yvm-engine) instead.
+</Info>
+
+## Class definition
+
+```cpp
+namespace Yoyo {
+    class LLVMEngine : public Engine {
+    public:
+        llvm::orc::ThreadSafeContext llvm_context;
+        std::unique_ptr<llvm::orc::LLJIT> jit;
+
+        LLVMAppModule* addAppModule(const std::string& name);
+        void addModule(const std::string& module_name, std::string source);
+        void compile();
+        void prepareForExecution();
+        void addStaticLibrary(std::string_view path);
+        void addDynamicLibrary(std::string_view path);
+
+        virtual void* createGlobalConstant(
+            const Type& type,
+            const std::vector<Constant>& args,
+            IRGenerator*) override;
+    };
+}
+```
+
+## Public fields
+
+<ResponseField name="llvm_context" type="llvm::orc::ThreadSafeContext">
+  The LLVM thread-safe context shared across all modules in this engine. All LLVM IR generation for this engine uses this context.
+</ResponseField>
+
+<ResponseField name="jit" type="std::unique_ptr&lt;llvm::orc::LLJIT&gt;">
+  The underlying LLVM LLJIT instance. Available after construction; fully linked after `prepareForExecution` is called.
+</ResponseField>
+
+## Methods
+
+### `addAppModule`
+
+Creates and registers a native C++ app module that Yoyo code can call into.
+
+```cpp
+LLVMAppModule* addAppModule(const std::string& name);
+```
+
+<ParamField path="name" type="std::string" required>
+  Unique name for the module. Yoyo source references it with `name::function_name` syntax.
+</ParamField>
+
+**Returns** a non-owning pointer to the new `LLVMAppModule`. The engine owns the module's lifetime.
+
+**Example:**
+
+```cpp
+Yoyo::LLVMEngine engine;
+auto app = engine.addAppModule("io");
+app->addFunction("(msg: &str) -> void", print_message, "print");
+```
+
+### `addModule`
+
+Registers a Yoyo source module for compilation.
+
+```cpp
+void addModule(const std::string& module_name, std::string source);
+```
+
+<ParamField path="module_name" type="std::string" required>
+  The module name used to identify and import this module. Conventionally matches the source file name without its extension.
+</ParamField>
+
+<ParamField path="source" type="std::string" required>
+  The full Yoyo source text.
+</ParamField>
+
+**Example:**
+
+```cpp
+std::ifstream f("game.yoyo");
+std::string src((std::istreambuf_iterator<char>(f)),
+                 std::istreambuf_iterator<char>());
+engine.addModule("game", src);
+```
+
+### `compile`
+
+Parses and compiles all registered source modules to LLVM IR and then to native code.
+
+```cpp
+void compile();
+```
+
+Call this after all modules and app modules have been registered. On success the JIT object contains fully compiled machine code ready for linking.
+
+<Warning>
+  Do not add further modules after calling `compile`. The behavior is undefined.
+</Warning>
+
+### `prepareForExecution`
+
+Links all compiled modules and resolves external symbols so the engine is ready to execute fibers.
+
+```cpp
+void prepareForExecution();
+```
+
+This must be called after `compile` and before creating fibers or calling `execute`.
+
+### `addStaticLibrary`
+
+Links a static archive (`.a` / `.lib`) into the JIT so Yoyo code can call its exported functions.
+
+```cpp
+void addStaticLibrary(std::string_view path);
+```
+
+<ParamField path="path" type="std::string_view" required>
+  Filesystem path to the static library file.
+</ParamField>
+
+### `addDynamicLibrary`
+
+Loads a shared library (`.so` / `.dll`) and makes its symbols available to Yoyo code.
+
+```cpp
+void addDynamicLibrary(std::string_view path);
+```
+
+<ParamField path="path" type="std::string_view" required>
+  Filesystem path to the shared library file.
+</ParamField>
+
+### `createGlobalConstant`
+
+Internal method used by the IR generator to materialise compile-time constant values in LLVM IR.
+
+```cpp
+virtual void* createGlobalConstant(
+    const Type& type,
+    const std::vector<Constant>& args,
+    IRGenerator*) override;
+```
+
+<Note>
+  This method is called by the compiler, not by application code.
+</Note>
+
+## Typical usage
+
+```cpp
+#include <yoyo/llvm/llvm_engine.h>
+#include <yoyo/llvm/app_module.h>
+#include <fstream>
+#include <sstream>
+
+static void log(void* msg) {
+    std::cout << Yoyo::Engine::viewString(msg) << '\n';
+}
+
+int main() {
+    Yoyo::LLVMEngine engine;
+
+    // Register native functions
+    auto app = engine.addAppModule("host");
+    app->addFunction("(msg: &str) -> void", log, "log");
+
+    // Load source
+    std::ifstream f("app.yoyo");
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    engine.addModule("app", ss.str());
+
+    // Optional: link against a C library
+    engine.addDynamicLibrary("libmylib.so");
+
+    // Compile and run
+    engine.compile();
+    engine.prepareForExecution();
+    engine.execute();
+}
+```
+
+## See also
+
+- [`Engine`](/api/engine) — base class
+- [`LLVMAppModule`](/api/app-module) — registering native functions
+- [`YVMEngine`](/api/yvm-engine) — bytecode backend alternative

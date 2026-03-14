@@ -1,0 +1,179 @@
+---
+title: "Generics"
+description: "Parametric type parameters for structs, classes, functions, and interfaces in Yoyo — syntax, constraints, and instantiation."
+---
+
+Yoyo supports **generics** — parameterised types and functions where one or more type parameters are filled in at the call or instantiation site. The compiler monomorphises each unique combination, producing specialized machine code with no runtime cost.
+
+## Syntax overview
+
+Generic parameters are introduced with `::<...>` after the kind keyword:
+
+| Form | Syntax |
+|------|--------|
+| Generic struct | `Name: struct::<T> = { ... }` |
+| Generic class  | `Name: class::<T> = { ... }` |
+| Generic function | `name: fn::<T>(...) -> R = { ... }` |
+| Generic interface | `Name: interface::<T> = { ... }` |
+| Generic alias | `Name: alias::<T> = SomeType::<T>` |
+
+## Generic structs
+
+```yoyo
+Vec2: struct::<T> = {
+    x: T, y: T,
+    new: fn(x: T, y: T) -> Vec2::<T> = return Vec2::<T>{ .x, .y };
+    to_str: fn(&this) -> str = return "{ ${this.x}, ${this.y} }";
+}
+```
+
+`T` is in scope everywhere inside the body — as a field type, a return type, and in expressions.
+
+### Multiple parameters
+
+```yoyo
+Generic2: struct::<T, E> = {
+    new:    fn -> Generic2::<T, E> = return;
+    take_t: fn(&this, arg: T) = return;
+}
+```
+
+## Generic functions
+
+```yoyo
+produce: fn::<T>(val: T) -> T = return val;
+```
+
+The function can be called without explicit type arguments when the compiler can infer `T`:
+
+```yoyo
+result := produce(42);      // T inferred as i32
+text   := produce("hello"); // T inferred as str
+```
+
+## Generic linked list example
+
+From the Yoyo test suite — a fully generic singly-linked list using GC references:
+
+```yoyo
+Node: struct::<T> = {
+    data: T,
+    next: (^Node::<T>)?     // GC pointer to the next node, or null
+}
+
+LinkedList: struct::<T> = {
+    first: (^Node::<T>)?,
+    new:   fn -> This = return This{ .first = null };
+    append: fn (&mut this, value: T) = {
+        if |val| (this.first) {
+            last: mut = val;
+            should_loop: mut = true;
+            while (should_loop) {
+                if |nxt| (last.next) last = nxt;
+                else should_loop = false;
+            }
+            last.next = gcnew Node::<T>{ .data = value, .next = null };
+        } else {
+            this.first = gcnew Node::<T>{ .data = value, .next = null };
+        }
+    }
+}
+```
+
+## Instantiation
+
+### Explicit instantiation
+
+Provide the type argument(s) in `::< >`:
+
+```yoyo
+veci1 := Vec2::<i32>::new(10, 20);
+a: mut = LinkedList::<str>::new();
+```
+
+### Inferred instantiation
+
+When the compiler can deduce the type arguments from the arguments at the call site, you may omit them:
+
+```yoyo
+veci2 := Vec2::new(20, 30);   // T inferred as i32 from the arguments
+```
+
+<Note>
+Type inference works at the call site. If a generic type is used as a storage type (e.g., a field type), you must always write the explicit arguments.
+</Note>
+
+## Interface constraints
+
+Use `impl InterfaceName` after a type parameter to restrict which types may be substituted:
+
+```yoyo
+takes_intf: fn::<T: impl Interface>(arg: T) = return;
+```
+
+Only types that implement `Interface` are valid substitutions for `T`. The constraint is checked at the call site.
+
+### Multiple constraints
+
+Separate constraints with `+` (for a single parameter) and declare additional parameters with commas:
+
+```yoyo
+// T must implement core::Iterator::<O>; O is unconstrained
+enumerate: fn::<T: impl core::Iterator::<O>, O>(iter: T) -> EnumerateIter::<T, O>
+    = return EnumerateIter::<T, O>{ .actual_iter = iter, .idx = 0 };
+```
+
+### Constrained with a nested generic interface
+
+```yoyo
+takes_generic_intf: fn::<O, T: impl InterfaceWrapper::<O>::Interface>(arg: T) -> O
+    = return;
+```
+
+Here `O` is a free parameter and `T` must implement the `Interface` that lives inside `InterfaceWrapper::<O>`.
+
+### Full example from the test suite
+
+```yoyo
+// chain two iterators that yield the same output type O
+chain: fn::<A: impl core::Iterator::<O>, B: impl core::Iterator::<O>, O>
+    (first: A, snd: B) -> ChainIter::<A, B, O>
+    = return ChainIter::<A, B, O>{ .first_iter = first, .second_iter = snd };
+```
+
+## Operator overloading with generics
+
+Generic operator overloads follow the same syntax:
+
+```yoyo
+// dot product for any Vec2::<T>
+operator: *::<T>(a: Vec2::<T>, b: Vec2::<T>) -> T = {
+    return a.x * b.x + a.y * b.y;
+}
+
+// borrow operator — deref through a generic wrapper
+operator: &::<T>(input: &Wrapper::<T>) -> &T = {
+    return &input.data;
+}
+```
+
+## `This` alias inside generic types
+
+Inside a generic struct or class, `This` refers to the fully-instantiated current type:
+
+```yoyo
+LinkedList: struct::<T> = {
+    first: (^Node::<T>)?,
+    new: fn -> This = return This{ .first = null };
+    //         ^^^^ expands to LinkedList::<T>
+}
+```
+
+<AccordionGroup>
+  <Accordion title="Monomorphisation at compile time">
+    Yoyo generics are always monomorphised — the compiler generates a separate code path for each unique set of type arguments. There is no boxing or dynamic dispatch involved unless you explicitly use interface references.
+  </Accordion>
+  <Accordion title="Recursive generic types">
+    Self-referential generic types (like `Node::<T>` containing `(^Node::<T>)?`) are supported. Use a GC reference `^T` or optional pointer to break the infinite-size cycle.
+  </Accordion>
+</AccordionGroup>

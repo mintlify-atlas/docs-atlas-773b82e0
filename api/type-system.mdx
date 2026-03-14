@@ -1,0 +1,323 @@
+---
+title: Type system
+description: The Yoyo::Type struct and the compile-time type system.
+---
+
+`Yoyo::Type` is the central data structure representing any type in the Yoyo type system. It is used throughout the compiler pipeline — in the parser, IR generator, type checker, and backends.
+
+## Struct definition
+
+```cpp
+#include <yoyo/type.h>
+
+namespace Yoyo {
+    struct YOYO_API Type {
+        std::string  name;              // canonical type name or internal tag
+        std::vector<Type> subtypes;     // generic arguments or element types
+        std::shared_ptr<FunctionSignature> signature; // for callable types
+        ModuleBase*  module;            // owning module (set after saturation)
+        mutable bool is_mutable = false;
+        bool         is_lvalue   = false;
+        std::string  block_hash; // scope where this type was defined
+    };
+}
+```
+
+## Type construction and saturation
+
+Types start out as unsaturated — they have a `name` and possibly subtypes, but `module` is not yet resolved. Before a `Type` can be used for code generation it must be *saturated* against a module context.
+
+### `saturate(ModuleBase* src, IRGenerator* irgen, bool do_verify = true)`
+
+```cpp
+void saturate(ModuleBase* src, IRGenerator* irgen, bool do_verify = true);
+```
+
+Resolves type aliases, fills in `module`, and normalizes the type in place. Call this before passing a type to any code generation API.
+
+<ParamField path="src" type="ModuleBase*" required>
+  The module from whose perspective the type name should be resolved.
+</ParamField>
+
+<ParamField path="irgen" type="IRGenerator*" required>
+  The IR generator providing scope context for alias resolution.
+</ParamField>
+
+<ParamField path="do_verify" type="bool" default="true">
+  When `true`, asserts that the resulting type is valid. Pass `false` only during speculative resolution.
+</ParamField>
+
+### `saturated(ModuleBase* src, IRGenerator* irgen)`
+
+```cpp
+Type saturated(ModuleBase* src, IRGenerator* irgen) const;
+```
+
+Returns a saturated copy of the type without modifying `*this`.
+
+## String representation
+
+### `full_name()`
+
+```cpp
+std::string full_name() const;
+```
+
+Returns the canonical string form of the type, including generic arguments and module qualifiers. This is the form used for name mangling.
+
+### `full_name_no_block()`
+
+```cpp
+std::string full_name_no_block() const;
+```
+
+Like `full_name()` but omits the `block_hash` suffix. Used when the block scope is not relevant.
+
+### `full_name_no_generics()`
+
+```cpp
+std::string full_name_no_generics() const;
+```
+
+Returns the name without generic arguments.
+
+### `pretty_name(const std::string& block)`
+
+```cpp
+std::string pretty_name(const std::string& block) const;
+```
+
+Returns a human-readable name suitable for error messages, resolving internal tags (e.g. `__opt` → `optional`) relative to `block`.
+
+## Size query
+
+### `bitsize(IRGenerator* irgen)`
+
+```cpp
+size_t bitsize(IRGenerator* irgen) const;
+```
+
+Returns the storage size of this type in bits.
+
+## Type predicates
+
+### Numeric types
+
+<ResponseField name="is_integral()" type="bool">
+  `true` for any integer type (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`).
+</ResponseField>
+
+<ResponseField name="is_signed_integral()" type="bool">
+  `true` for signed integers (`i8`, `i16`, `i32`, `i64`).
+</ResponseField>
+
+<ResponseField name="is_unsigned_integral()" type="bool">
+  `true` for unsigned integers (`u8`, `u16`, `u32`, `u64`).
+</ResponseField>
+
+<ResponseField name="is_floating_point()" type="bool">
+  `true` for `f32` and `f64`.
+</ResponseField>
+
+<ResponseField name="is_boolean()" type="bool">
+  `true` when `name == "bool"`.
+</ResponseField>
+
+<ResponseField name="is_void()" type="bool">
+  `true` when `name == "void"`.
+</ResponseField>
+
+<ResponseField name="is_primitive()" type="bool">
+  `true` for integers, floats, booleans, and void.
+</ResponseField>
+
+<ResponseField name="integer_width()" type="std::optional<uint32_t>">
+  Returns the bit width of an integer type, or `std::nullopt` if not integral.
+</ResponseField>
+
+<ResponseField name="float_width()" type="std::optional<uint32_t>">
+  Returns the bit width of a float type, or `std::nullopt` if not floating point.
+</ResponseField>
+
+### Built-in compound types
+
+<ResponseField name="is_str()" type="bool">
+  `true` when `name == "str"`. The managed string type.
+</ResponseField>
+
+<ResponseField name="is_char()" type="bool">
+  `true` when `name == "char"`.
+</ResponseField>
+
+<ResponseField name="is_optional()" type="bool">
+  `true` when `name == "__opt"`. Represents `T?`.
+</ResponseField>
+
+<ResponseField name="is_result()" type="bool">
+  `true` when `name == "__res"`. Represents `T \ E` (a result type with ok and error variants).
+</ResponseField>
+
+<ResponseField name="is_variant()" type="bool">
+  `true` when `name == "__var"`. Represents an anonymous multi-type variant.
+</ResponseField>
+
+<ResponseField name="is_tuple()" type="bool">
+  `true` when `name == "__tup"`. Subtypes are the element types.
+</ResponseField>
+
+<ResponseField name="is_function()" type="bool">
+  `true` when `name == "__fn"`. A first-class storable function value.
+</ResponseField>
+
+<ResponseField name="is_lambda()" type="bool">
+  `true` when `name` starts with `"__lambda"`. Lambdas are anonymous function objects.
+</ResponseField>
+
+<ResponseField name="is_opaque_pointer()" type="bool">
+  `true` when `name == "ptr"`. An untyped `void*`-equivalent pointer.
+</ResponseField>
+
+### Array types
+
+<ResponseField name="is_static_array()" type="bool">
+  `true` for fixed-size arrays `[T; N]`.
+</ResponseField>
+
+<ResponseField name="static_array_size()" type="uint32_t">
+  Returns the element count of a static array. Call only when `is_static_array()` is `true`.
+</ResponseField>
+
+<ResponseField name="is_dynamic_array()" type="bool">
+  `true` for heap-allocated growable arrays.
+</ResponseField>
+
+<ResponseField name="is_slice()" type="bool">
+  `true` for immutable slice types `&[T]`.
+</ResponseField>
+
+<ResponseField name="is_mut_slice()" type="bool">
+  `true` for mutable slice types `&mut [T]`.
+</ResponseField>
+
+### Reference types
+
+<ResponseField name="is_reference()" type="bool">
+  `true` for any reference type (immutable or mutable).
+</ResponseField>
+
+<ResponseField name="is_mutable_reference()" type="bool">
+  `true` when `name == "__ref_mut"`. Represents `&mut T`.
+</ResponseField>
+
+<ResponseField name="is_gc_reference()" type="bool">
+  `true` for garbage-collected reference types `^T`.
+</ResponseField>
+
+<ResponseField name="is_view()" type="bool">
+  `true` for view types (non-owning immutable borrows).
+</ResponseField>
+
+<ResponseField name="is_mut_view()" type="bool">
+  `true` for mutable view types.
+</ResponseField>
+
+<ResponseField name="is_gc_view()" type="bool">
+  `true` for GC-managed view types.
+</ResponseField>
+
+<ResponseField name="is_non_owning(IRGenerator*)" type="bool">
+  `true` if the type does not own its data (references, slices, views).
+</ResponseField>
+
+## Type transformations
+
+### Creating reference types
+
+```cpp
+Type reference_to() const;         // &T
+Type mutable_reference_to() const; // &mut T
+Type gc_reference_to() const;      // ^T
+```
+
+### Mutability and value category
+
+```cpp
+Type strip_lvalue() const;  // remove is_lvalue flag
+Type make_mut() const;      // set is_mutable = true
+Type make_lvalue() const;   // set is_lvalue = true
+```
+
+### `deref()`
+
+```cpp
+const Type& deref() const;
+```
+
+Returns the dereferenced type if this is a reference type, or `*this` if it is not.
+
+### `variant_merge(Type a, Type b)` — static
+
+```cpp
+static Type variant_merge(Type a, Type b);
+```
+
+Merges two types into a variant:
+
+- If `a == b`, returns `a`.
+- If `a` is already a variant (`__var`), adds `b` to its subtypes (if not already present).
+- If `b` is already a variant, adds `a` to it.
+- Otherwise, returns a new variant with subtypes `{a, b}`.
+
+Used by the type checker to unify the branches of `if` expressions.
+
+## Compatibility predicates
+
+```cpp
+bool is_assignable_from(const Type& other, IRGenerator*) const;
+bool can_accept_as_arg(const Type& other, IRGenerator*) const;
+size_t conversion_friction(const Type& other, IRGenerator*) const;
+```
+
+`conversion_friction` returns a numeric cost of implicit conversion — lower means more compatible. Used for overload resolution.
+
+## Example
+
+```cpp
+#include <yoyo/type.h>
+
+Yoyo::Type t;
+t.name = "i32";
+assert(t.is_integral());
+assert(t.is_signed_integral());
+assert(!t.is_floating_point());
+
+// Build &mut i32
+Yoyo::Type ref = t.mutable_reference_to();
+assert(ref.is_mutable_reference());
+assert(ref.deref().name == "i32");
+
+// Merge two types into a variant
+Yoyo::Type a; a.name = "i32";
+Yoyo::Type b; b.name = "str";
+Yoyo::Type v = Yoyo::Type::variant_merge(a, b);
+assert(v.is_variant());
+assert(v.subtypes.size() == 2);
+```
+
+## Internal type name tags
+
+| Tag | Yoyo surface syntax | Meaning |
+|---|---|---|
+| `__opt` | `T?` | Optional |
+| `__res` | `T \ E` | Result |
+| `__var` | *(anonymous)* | Variant |
+| `__tup` | `(A, B, ...)` | Tuple |
+| `__fn` | `fn(A) -> B` | Storable function |
+| `__lambda...` | `\|...\| { ... }` | Lambda closure |
+| `__ref_mut` | `&mut T` | Mutable reference |
+| `ptr` | `ptr` | Opaque pointer |
+
+## See also
+
+- [IRGenerator](/api/ir-generator) — uses `Type` throughout its API
+- [Parser](/api/parser) — `parseType()` returns a `Type`

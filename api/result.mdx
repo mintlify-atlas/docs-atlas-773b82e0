@@ -1,0 +1,118 @@
+---
+title: "Result"
+description: "Error codes returned by YVMAppModule and LLVMAppModule registration methods."
+---
+
+`Yoyo::Result` is a scoped enum returned by [`addFunction`](/api/app-module#addfunction), [`addEnum`](/api/app-module#addenum), and [`addClass`](/api/app-module#addclass) on both `YVMAppModule` and `LLVMAppModule`.
+
+```cpp
+#include <yoyo/yvm/app_module.h>  // or
+#include <yoyo/llvm/app_module.h>
+```
+
+## Enum definition
+
+```cpp
+namespace Yoyo {
+    enum class Result {
+        Success,
+        NullParameter,
+        InvalidSignature,
+        ParameterCountMismatch,
+        ReturnTypeMismatch,
+        ParameterTypeMismatch,
+        DuplicateEnumValue,
+    };
+}
+```
+
+## Values
+
+<ResponseField name="Success" type="Result">
+  The operation completed without errors. The function, enum, or class was registered successfully.
+</ResponseField>
+
+<ResponseField name="NullParameter" type="Result">
+  The `func` pointer passed to `addFunction` was `nullptr`. The function was not registered.
+
+  ```cpp
+  // Triggers NullParameter:
+  auto r = mod->addFunction("() -> i32", nullptr, "my_fn");
+  // r == Result::NullParameter
+  ```
+</ResponseField>
+
+<ResponseField name="InvalidSignature" type="Result">
+  The signature string could not be parsed. Check the signature for syntax errors — missing `->`, unrecognised type names, or malformed parameter lists.
+
+  ```cpp
+  // Triggers InvalidSignature (missing parentheses):
+  auto r = mod->addFunction("x: i32 -> void", fn, "bad");
+  // r == Result::InvalidSignature
+  ```
+</ResponseField>
+
+<ResponseField name="ParameterCountMismatch" type="Result">
+  The number of parameters in the C++ function pointer does not match what the signature string specifies (accounting for the implicit SRET pointer when the return type requires struct-return).
+
+  ```cpp
+  // Signature says 1 param but C++ function takes 0:
+  auto r = mod->addFunction(
+      "(x: i32) -> void",
+      static_cast<void(*)()>([]() {}),
+      "bad");
+  // r == Result::ParameterCountMismatch
+  ```
+
+  <Tip>
+    Remember that SRET return types (structs, strings, arrays) add a hidden first parameter to the C++ side. See [Parameter count and SRET](/api/app-module#parameter-count-and-sret).
+  </Tip>
+</ResponseField>
+
+<ResponseField name="ReturnTypeMismatch" type="Result">
+  The return type in the signature requires struct-return (SRET) but the C++ function does not return `void`. When SRET is in effect, the return value is written through an output pointer and the C++ function must be declared `void`.
+
+  ```cpp
+  // str is SRET but C++ returns int — wrong
+  auto r = mod->addFunction(
+      "() -> str",
+      static_cast<int(*)(void*)>([](void*) -> int { return 0; }),
+      "bad");
+  // r == Result::ReturnTypeMismatch
+  ```
+</ResponseField>
+
+<ResponseField name="ParameterTypeMismatch" type="Result">
+  Reserved for future per-parameter type validation. Currently not emitted by the implementation.
+</ResponseField>
+
+<ResponseField name="DuplicateEnumValue" type="Result">
+  Two variants in the map passed to `addEnum` share the same integer value.
+
+  ```cpp
+  // Triggers DuplicateEnumValue:
+  auto r = mod->addEnum("Status", {{"Ok", 0}, {"AlsoOk", 0}});
+  // r == Result::DuplicateEnumValue
+  ```
+</ResponseField>
+
+## Handling results
+
+```cpp
+auto check = [](Yoyo::Result r, std::string_view fn_name) {
+    if (r != Yoyo::Result::Success) {
+        std::cerr << "Failed to register '" << fn_name
+                  << "': error " << static_cast<int>(r) << '\n';
+        std::terminate();
+    }
+};
+
+check(mod->addFunction("(x: &str) -> i32", print_fn, "print"), "print");
+check(mod->addFunction("(x: bool, y: &str) -> void", assert_fn, "assert"), "assert");
+```
+
+## See also
+
+- [`addFunction`](/api/app-module#addfunction)
+- [`addEnum`](/api/app-module#addenum)
+- [`addClass`](/api/app-module#addclass)

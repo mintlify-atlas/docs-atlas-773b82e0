@@ -1,0 +1,119 @@
+---
+title: "Enums"
+description: "Named integer constant sets in Yoyo — declaration, variant access, operator subscripting, and C++ interop."
+---
+
+An **enum** declares a set of named integer constants backed by `i32`. Use enums when you need a closed set of named choices without associated data — for associated data, use a [union](/language/unions) instead.
+
+## Declaration syntax
+
+```yoyo
+TypeName: enum = { Variant1, Variant2, Variant3 }
+```
+
+Variants are separated by commas or newlines. By default, values are assigned sequentially starting from `0`.
+
+### Example
+
+```yoyo
+ColorType: enum = { Red, Green, Blue }
+// Red == 0, Green == 1, Blue == 2
+```
+
+## Accessing variants
+
+Use the `::` scope operator:
+
+```yoyo
+main: fn = {
+    color := ColorType::Red;     // type: ColorType, value: 0
+    green := ColorType::Green;   // type: ColorType, value: 1
+}
+```
+
+## Using enums as subscript keys
+
+Enums work naturally as keys for custom `operator: []` overloads, making indexed access more readable and type-safe:
+
+```yoyo
+ColorType: enum = { Red, Green, Blue }
+
+ColorValue: struct = {
+    red_val:   i32,
+    green_val: i32,
+    blue_val:  i32
+}
+
+// Custom index operator: ColorValue[ColorType]
+operator: [](obj: &ColorValue, arg: ColorType) -> &i32 = return &obj.red_val;
+
+main: fn(inp: i32) = {
+    a: mut = ColorValue{
+        .red_val   = inp,
+        .green_val = 100,
+        .blue_val  = 50
+    };
+    val := a[ColorType::Red];   // calls the index operator
+}
+```
+
+<Note>
+The subscript operator receives the enum value as an `i32`-backed argument. You can switch on its integer value or compare it directly with `==`.
+</Note>
+
+## Integer backing
+
+Every enum variant is an `i32` under the hood. You can rely on:
+
+- Sequential assignment: `Red == 0`, `Green == 1`, `Blue == 2` for a three-variant enum declared in that order.
+- Direct comparison: `color == ColorType::Green` works without a cast.
+
+<Info>
+Explicit variant values (e.g., `Red = 10`) are not yet supported in the current implementation. Variants are always sequentially numbered from 0.
+</Info>
+
+## Enum methods
+
+Like structs, enums can contain method declarations in their body:
+
+```yoyo
+Direction: enum = {
+    North, South, East, West,
+
+    opposite: fn(&this) -> Direction = {
+        if (*this == Direction::North) return Direction::South;
+        if (*this == Direction::South) return Direction::North;
+        if (*this == Direction::East)  return Direction::West;
+        return Direction::East;
+    }
+}
+
+main: fn = {
+    d := Direction::North;
+    opp := d.opposite(); // Direction::South
+}
+```
+
+## C++ interop — `addEnum`
+
+Expose a C++ enum to Yoyo scripts using the `addEnum` method on an app module:
+
+```cpp
+#include <yvm/app_module.h>
+
+enum class Direction { North = 0, South = 1, East = 2, West = 3 };
+
+auto mod = engine.addAppModule("app");
+mod->addEnum("Direction", {
+    {"North", 0},
+    {"South", 1},
+    {"East",  2},
+    {"West",  3}
+});
+```
+
+Yoyo scripts then access it as `app::Direction::North`, and the type is treated as an `i32`-backed enum just like natively declared ones.
+
+<Tip>
+When bridging a C++ enum class, map each enumerator's underlying integer value explicitly. Relying on implicit casting from `enum class` to `int` is undefined behavior in C++, so extract the values with `static_cast<int32_t>(Direction::North)`.
+</Tip>

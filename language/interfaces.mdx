@@ -1,0 +1,184 @@
+---
+title: "Interfaces"
+description: "Defining interfaces, implementing them on structs with inline impl blocks, and external impl-for syntax in Yoyo."
+---
+
+An **interface** declares a set of methods that a type must provide. Any struct or class can implement an interface, enabling generic code to operate on values of different types through a shared contract.
+
+## Declaring an interface
+
+```yoyo
+InterfaceName: interface = {
+    method: fn(&this) -> ReturnType;
+}
+```
+
+Methods listed without a body are required — implementing types must provide them. Methods with a body provide a default implementation.
+
+### Minimal interface
+
+```yoyo
+Interface: interface = { }
+```
+
+An empty interface acts as a marker trait: any type that declares `impl Interface { }` satisfies it.
+
+## Implementing an interface inline
+
+Declare an `impl` block directly inside the struct or class body:
+
+```yoyo
+Generic1: struct::<T> = {
+    impl Interface { }
+    impl InterfaceWrapper::<T>::Interface { }
+
+    new: fn -> Generic1::<T> = return;
+}
+```
+
+The `impl` block name is the fully-qualified interface type. For a generic interface, pass type arguments as you would at any other use site.
+
+### Implementing `core::Iterator`
+
+The `core::Iterator::<Output>` interface powers `for` loops. Implement it by providing a `next` method that returns `Output?`:
+
+```yoyo
+LinkedListIterator: struct:&::<T> impl core::Iterator::<&T> = {
+    curr: (^Node::<T>)?,
+    impl core::Iterator::<&T> {
+        next: fn (&mut this) -> (&T)? = {
+            if |node| (this.curr) {
+                this.curr = node.next;
+                return &node.data;
+            }
+            else return null;
+        }
+    }
+}
+```
+
+<Note>
+`struct:&` declares a **reference-semantic struct** — the value is passed and stored by reference rather than by value. This is required for iterator types that hold borrowed state.
+</Note>
+
+### Multiple interface implementations
+
+A struct can implement any number of interfaces by listing multiple `impl` blocks:
+
+```yoyo
+EnumerateIter: struct:&::<T, O> impl core::Iterator::<(u64, O)> = {
+    actual_iter: T,
+    idx: u64,
+    impl core::Iterator::<(u64, O)> {
+        next: fn (&mut this) -> (u64, O)? = {
+            if |nxt| (this.actual_iter.core::Iterator::<O>::next()) {
+                this.idx = this.idx + 1;
+                return (this.idx, nxt);
+            }
+            else return null;
+        }
+    }
+}
+```
+
+## External `impl for` blocks
+
+You can attach an interface implementation to a type from outside the type's own declaration using the `impl::<...> for Type` syntax inside the interface declaration:
+
+```yoyo
+Interface: interface = {
+    impl::<T> for Generic2::<T, f32> { }
+}
+```
+
+This says: for any `T`, `Generic2::<T, f32>` implements `Interface`. The generic clause `impl::<T>` introduces type parameters used in the `for` clause.
+
+<Info>
+External `impl for` blocks live inside the **interface declaration** body, not inside the type body. This mirrors Rust's orphan rule approach: the implementation is "owned" by the interface.
+</Info>
+
+## Interface-constrained generics
+
+Use `impl InterfaceName` as a constraint on a generic type parameter:
+
+```yoyo
+takes_intf: fn::<T: impl Interface>(arg: T) = return;
+```
+
+You can call `takes_intf` with any type that has an `impl Interface` block:
+
+```yoyo
+main: fn = {
+    obj1 := Generic1::new();
+    obj2 := Generic2::new();
+    takes_intf(obj1);   // Generic1::<T> implements Interface
+    takes_intf(obj2);   // Generic2::<T, f32> implements Interface via impl-for
+}
+```
+
+### Constrained with a nested interface
+
+```yoyo
+InterfaceWrapper: struct::<T> = {
+    Interface: interface = { }
+}
+
+// T must implement InterfaceWrapper::<O>::Interface
+takes_generic_intf: fn::<O, T: impl InterfaceWrapper::<O>::Interface>(arg: T) -> O
+    = return;
+```
+
+The nested interface path is resolved through the `InterfaceWrapper` struct's namespace.
+
+## Qualifying method calls
+
+When a type implements multiple interfaces that define a method with the same name, qualify the call with the interface path:
+
+```yoyo
+// Explicitly call the core::Iterator::<O> next method
+this.actual_iter.core::Iterator::<O>::next()
+```
+
+## Complete test-suite example
+
+```yoyo
+takes_intf:         fn::<T: impl Interface>(arg: T) = return;
+takes_generic_intf: fn::<O, T: impl InterfaceWrapper::<O>::Interface>(arg: T) -> O = return;
+
+Generic1: struct::<T> = {
+    impl Interface { }
+    impl InterfaceWrapper::<T>::Interface { }
+    new: fn -> Generic1::<T> = return;
+}
+
+Generic2: struct::<T, E> = {
+    new:    fn -> Generic2::<T, E> = return;
+    take_t: fn(&this, arg: T) = return;
+}
+
+Interface: interface = {
+    impl::<T> for Generic2::<T, f32> { }
+}
+
+InterfaceWrapper: struct::<T> = {
+    Interface: interface = { }
+}
+
+main: fn = {
+    obj1 := Generic1::new();
+    obj2 := Generic2::new();
+    obj3: i32 = takes_generic_intf(obj1);
+    takes_intf(obj1);
+    takes_intf(obj2);
+    obj2.take_t(obj3);
+}
+```
+
+<AccordionGroup>
+  <Accordion title="Interface method dispatch">
+    When a concrete type is known at compile time, interface method calls are dispatched statically (no vtable). Dynamic dispatch through an interface pointer is not currently supported; use generic constraints instead.
+  </Accordion>
+  <Accordion title="`struct:&` and iterator types">
+    The `:&` modifier after `struct` marks the type as reference-semantic. Iterator structs use this because they hold references to external data — copying them by value would sever the connection to the underlying collection.
+  </Accordion>
+</AccordionGroup>

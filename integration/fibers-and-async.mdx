@@ -1,0 +1,127 @@
+---
+title: "Fibers and async"
+description: "Understand the fiber-based cooperative scheduler: creating coroutines, waiting, sleeping, and managing the Runtime."
+---
+
+Yoyo's concurrency model is built on lightweight cooperative coroutines called **fibers**. All Yoyo function calls run inside a fiber. The `Runtime` struct is a round-robin scheduler that drives them to completion.
+
+## The Runtime struct
+
+```cpp
+struct Runtime {
+    std::vector<mco_coro*> routs;         // active coroutines
+    std::vector<mco_coro*> dead_coros;    // completed, pending cleanup
+    std::unordered_map<mco_coro*, bool> is_externally_owned; // ownership flag
+
+    using TimePoint = std::chrono::time_point<std::chrono::steady_clock>;
+    std::vector<std::pair<mco_coro*,
+        std::variant<
+            mco_coro*,    // waiting for another coroutine
+            TimePoint,    // waiting until a point in time (sleep)
+            std::monostate// ready to run
+        >>> waiting;
+
+    void run();
+    void add_job(mco_coro*);
+    void release_job(mco_coro*);
+};
+```
+
+The `Runtime` is owned by the `Engine`. You interact with it indirectly through `engine.execute()`, `engine.createFiber()`, and `engine.sleep()`.
+
+## The Fiber struct
+
+```cpp
+struct Fiber {
+    void*     parameters; // write input args here before execute()
+    void*     return_val; // read output here after execute()
+    mco_coro* coro;       // underlying minicoro coroutine
+    Runtime*  rt;         // back-pointer to the scheduler
+
+    template<typename T>
+    T get();              // move-reads return_val and calls forget()
+
+    void forget();        // release ownership without waiting
+};
+```
+
+`mco_coro` is from the [minicoro](https://github.com/edubart/minicoro) library, a single-header C coroutine implementation. You do not need to interact with `mco_coro` directly.
+
+## Creating fibers from C++
+
+```cpp
+auto fn  = engine.findFunction(mod, mod->module_hash + "main").value();
+auto fib = engine.createFiber(fn);
+```
+
+Creating a fiber registers it with the `Runtime`. It will run when `execute()` is called. You can queue multiple fibers before a single `execute()` — they all run concurrently under cooperative scheduling:
+
+```cpp
+// Queue three fibers, then run them all
+for (int i = 0; i < 3; ++i) {
+    auto fib = engine.createFiber(fn);
+    *(int32_t*)fib.parameters = i;
+}
+engine.execute();
+```
+
+## Running the scheduler
+
+```cpp
+void execute(); // runs until all non-externally-owned fibers are done
+```
+
+`execute()` calls `Runtime::run()` in a loop. The scheduler processes `routs` in round-robin order, yielding between each coroutine. Fibers that are waiting (sleeping or awaiting another coroutine) are skipped until their condition is met.
+
+## Sleeping inside a fiber
+
+Yoyo scripts can yield the current fiber for a duration using the `sleep` API exposed on the engine. From C++ you can also call it directly when executing code in a fiber context:
+
+```cpp
+// Sleep for 100 milliseconds
+engine.sleep(std::chrono::milliseconds(100));
+
+// Or with raw milliseconds
+engine.sleep(uint64_t{100});
+```
+
+The overloads accept any `std::chrono::duration` and convert to milliseconds internally. A sleeping fiber is moved to the `waiting` list with a `TimePoint` variant and is rescheduled once the deadline passes.
+
+## Waiting states
+
+The `waiting` list tracks three possible states for a suspended fiber:
+
+| Variant | Meaning |
+|---|---|
+| `mco_coro*` | Waiting for a specific coroutine to finish |
+| `TimePoint` | Sleeping until a wall-clock deadline |
+| `std::monostate` | Ready — will be moved back to `routs` on the next scheduler tick |
+
+## Fiber ownership
+
+The `is_externally_owned` map records whether a fiber was created with external ownership. When a `Fiber` object goes out of scope, its destructor calls `Runtime::release_job(coro)`. If the fiber is **not** externally owned, the scheduler is free to clean it up immediately.
+
+Call `Fiber::forget()` to detach from the fiber and hand full control to the scheduler:
+
+```cpp
+{
+    auto fib = engine.createFiber(fn);
+    fib.forget(); // scheduler now owns the lifetime
+    // fib is now inert — do not call get<T>() on it
+}
+engine.execute(); // fiber still runs
+```
+
+<Warning>
+Do not call `Fiber::get<T>()` after `forget()`. The return buffer may have been freed.
+</Warning>
+
+## Fiber lifetime summary
+
+```
+createFiber(fn)     → Fiber registered in Runtime::routs
+execute()           → scheduler drives it to completion
+fib.get<T>()        → read return value, calls forget() internally
+~Fiber()            → calls release_job if coro != nullptr
+fib.forget()        → nulls coro, releases job — safe early cleanup
+```

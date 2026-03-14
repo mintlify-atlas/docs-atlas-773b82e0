@@ -1,0 +1,199 @@
+---
+title: "App modules"
+description: "Register C++ functions, enums, and classes for use inside Yoyo scripts."
+---
+
+An `AppModule` is a named collection of C++ symbols that Yoyo scripts can call. You create one with `engine.addAppModule("name")` and then register items on it before calling `compile()`.
+
+## Creating an app module
+
+```cpp
+Yoyo::YVMEngine engine;
+auto md = engine.addAppModule("test");
+```
+
+The string `"test"` becomes the module namespace inside Yoyo: `test::print()`, `test::assert()`, etc.
+
+## Registering functions
+
+Use the templated `addFunction` method:
+
+```cpp
+Result addFunction(std::string sig_str, R(*func)(Args...), std::string name);
+```
+
+| Parameter  | Description |
+|------------|-------------|
+| `sig_str`  | Yoyo signature string, e.g. `"(x: &str) -> i32"` |
+| `func`     | Pointer to the C++ function (must not be `nullptr`) |
+| `name`     | Name the function will have inside Yoyo |
+
+The template validates that the number of C++ parameters matches what the signature declares (including the hidden `void* out` parameter for SRET return types).
+
+### Signature string format
+
+Signatures use Yoyo type syntax:
+
+```
+(param_name: Type, ...) -> ReturnType
+```
+
+The parameter name is required in the string but is not checked against the C++ parameter names. Examples:
+
+| Yoyo signature | C++ function type |
+|---|---|
+| `"(x: &str) -> i32"` | `int32_t(void*)` |
+| `"(x: bool, y: &str) -> void"` | `void(bool, void*)` |
+| `"(x: u64) -> void"` | `void(uint64_t)` |
+| `"() -> i32"` | `int32_t()` |
+| `"() -> str"` | `void(void*)` (SRET) |
+
+### Return values from `addFunction`
+
+`addFunction` returns a `Result` enum:
+
+```cpp
+enum class Result {
+    Success,
+    NullParameter,          // func pointer was nullptr
+    InvalidSignature,       // sig_str failed to parse
+    ParameterCountMismatch, // C++ arity != Yoyo arity
+    ReturnTypeMismatch,     // SRET type requires void return
+    ParameterTypeMismatch,
+    DuplicateEnumValue,
+};
+```
+
+Always check the return value during development:
+
+```cpp
+auto result = md->addFunction("(x: &str) -> i32", func, "print");
+if (result != Yoyo::Result::Success) {
+    // handle registration error
+}
+```
+
+## Working with strings
+
+Yoyo passes strings by reference using an internal representation. Use `Engine::viewString` to convert a `void*` argument into a `std::string_view`:
+
+```cpp
+int32_t func(void* arg) {
+    std::string_view sv = Yoyo::Engine::viewString(arg);
+    std::cout << sv << std::endl;
+    return -76;
+}
+
+md->addFunction("(x: &str) -> i32", func, "print");
+```
+
+<Warning>
+`viewString` returns a non-owning view. Do not store it past the lifetime of the Yoyo string object.
+</Warning>
+
+## Returning strings (SRET types)
+
+When the Yoyo return type requires struct return (`should_sret()` is true — which is the case for `str` and most composite types), the calling convention changes: the C++ function receives a `void* out` as its **first** parameter and must return `void`. The function writes the result into `out`.
+
+Yoyo's `str` layout is:
+
+```cpp
+struct YoyoString {
+    char*    text;
+    uint64_t size;
+    uint64_t capacity;
+};
+```
+
+Example that returns a heap-allocated string:
+
+```cpp
+void get_string(void* out) {
+    auto as_str = reinterpret_cast<YoyoString*>(out);
+    as_str->text     = static_cast<char*>(malloc(15));
+    as_str->size     = 15;
+    as_str->capacity = 15;
+    strcpy(as_str->text, "Hello from c++");
+}
+
+md->addFunction("() -> str", get_string, "get_string");
+```
+
+<Note>
+Yoyo takes ownership of the returned string memory and will free it according to its own memory model. Allocate with `malloc` (or a compatible allocator).
+</Note>
+
+## Comparing two strings
+
+When a function receives multiple string references, each one arrives as a separate `void*`:
+
+```cpp
+void test_str_cmp(void* str1, void* str2) {
+    auto sv1 = Yoyo::Engine::viewString(str1);
+    auto sv2 = Yoyo::Engine::viewString(str2);
+    // compare sv1 and sv2 ...
+}
+
+md->addFunction("(x: &str, y: &str) -> void", test_str_cmp, "str_cmp");
+```
+
+## Registering enums
+
+```cpp
+Result addEnum(
+    std::string enum_name,
+    std::unordered_map<std::string, int32_t> values
+);
+```
+
+Example:
+
+```cpp
+md->addEnum("Color", {
+    {"Red",   0},
+    {"Green", 1},
+    {"Blue",  2},
+});
+```
+
+Returns `Result::DuplicateEnumValue` if any integer values are repeated.
+
+## Registering classes (structs)
+
+```cpp
+Result addClass(
+    std::string class_name,
+    std::vector<ClassVariable> variables,
+    Ownership ownership,
+    std::string block_hash
+);
+```
+
+This registers a C++ struct layout so Yoyo's type system can reason about it. `ClassVariable` describes each field name and type. `Ownership` controls the memory ownership model (`Owned`, `Shared`, etc.).
+
+## Full example from the test suite
+
+```cpp
+Yoyo::YVMEngine engine;
+auto md = engine.addAppModule("test");
+
+md->addFunction("(x: &str) -> i32",      func,        "print");
+md->addFunction("(x: bool, y: &str) -> void", test_assert, "assert");
+md->addFunction("(x: &str, y: &str) -> void", test_str_cmp, "str_cmp");
+md->addFunction("() -> str",              get_string,  "get_string");
+md->addFunction("(x: u64) -> void",       print_int,   "print_int");
+md->addFunction("() -> i32",
+    static_cast<int32_t(*)()>([]() -> int32_t { return -50; }),
+    "get_int");
+```
+
+From Yoyo, these are called as:
+
+```yoyo
+main: fn = {
+    test::print(&"hello");
+    test::assert(1 == 1, &"1 == 1");
+    val := test::get_string();
+    test::print(&val);
+}
+```

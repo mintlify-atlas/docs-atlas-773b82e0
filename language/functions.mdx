@@ -1,0 +1,307 @@
+---
+title: Functions
+description: Declaring functions, return types, methods on structs, generic functions, operator overloads, and stored lambdas in Yoyo.
+---
+
+Functions are first-class in Yoyo. They can be declared at module scope, inside struct/class bodies as methods, or as inline lambdas assigned to variables.
+
+## Basic declaration
+
+The declaration form follows the universal Yoyo pattern — `name: kind = body`:
+
+```yoyo
+add: fn(a: i32, b: i32) -> i32 = return a + b;
+```
+
+`fn` is the kind keyword. Parameters are `name: Type` pairs. `->` introduces the return type.
+
+### Multi-statement body
+
+Wrap the body in braces when more than one statement is needed:
+
+```yoyo
+greet: fn(name: &str) -> str = {
+    prefix := "Hello, ";
+    return prefix + name;
+}
+```
+
+### Single-statement implicit body
+
+Omit braces when the body is a single statement:
+
+```yoyo
+double:    fn(x: i32) -> i32 = return x * 2;
+condition: fn -> bool        = { return false; }
+print_i32: fn(val: i32)      = "${val}".test::print();
+```
+
+### Omitting the return type
+
+When a function returns `void`, the `-> void` annotation and the braces may be omitted:
+
+```yoyo
+do_nothing: fn(x: i32) = return;
+work:       fn(a: i32, b: i32) = {
+    process(a);
+    process(b);
+}
+```
+
+## Parameters
+
+Parameters are always `name: Type`:
+
+```yoyo
+takes_ref:     fn(a: &i32) = return;
+takes_mut_ref: fn(b: &mut i32) = *b = 20;
+takes_slice:   fn(s: &[i32; 9]) = return;
+```
+
+Parameters are immutable unless explicitly typed as `&mut T` or the function takes ownership.
+
+## Return types
+
+```yoyo
+// Primitive
+main: fn -> i32 = return 0;
+
+// Struct
+new: fn -> Vec2::<T> = return Vec2::<T>{ .x, .y };
+
+// Optional
+check_winner: fn(&this) -> Player? = return null;
+
+// Result
+parse: fn -> i32 \ str = return 0;
+
+// Reference return
+get_field: fn(obj: &ColorValue, arg: ColorType) -> &i32 = return &obj.red_val;
+```
+
+## Methods
+
+Methods are functions declared inside a struct or class body. They take a special first parameter that refers to the receiver.
+
+### Immutable receiver: `&this`
+
+Use `&this` when the method does not modify the receiver:
+
+```yoyo
+Vec2: struct::<T> = {
+    x: T, y: T,
+    to_str: fn(&this) -> str = return "{ ${this.x}, ${this.y} }";
+}
+```
+
+### Mutable receiver: `&mut this`
+
+Use `&mut this` when the method modifies the receiver:
+
+```yoyo
+Game: struct = {
+    player: Player,
+    play: fn(&mut this) = {
+        this.player = this.player.cycle();
+    }
+}
+```
+
+### Calling methods
+
+Methods are called with dot syntax:
+
+```yoyo
+vec.to_str().test::print();
+game.play();
+a.func();
+```
+
+For disambiguation with a qualified type name:
+
+```yoyo
+y.Type::func();
+this.actual_iter.core::Iterator::<O>::next()
+```
+
+### `This` keyword
+
+Inside a struct or class body, `This` refers to the enclosing type. It is useful for methods that return the type itself:
+
+```yoyo
+LinkedList: struct::<T> = {
+    first: (^Node::<T>)?,
+    new: fn -> This = return This{ .first = null };
+    from_array: fn(arr: mut [T]) -> This = {
+        list: This = This{ .first = null };
+        return list;
+    }
+}
+```
+
+## Static functions
+
+Functions inside a struct that do not take `this` as a parameter are static. Call them with `::` scope resolution:
+
+```yoyo
+Vec2: struct::<T> = {
+    x: T, y: T,
+    new: fn(x: T, y: T) -> Vec2::<T> = return Vec2::<T>{ .x, .y };
+}
+
+// Call site
+veci1 := Vec2::<i32>::new(10, 20);
+veci2 := Vec2::new(20, 30);           // T inferred
+```
+
+The idiomatic constructor pattern is a static `new` function returning `This`:
+
+```yoyo
+Game: struct = {
+    data: [Player; 9],
+    player: Player,
+    new: fn -> Game = {
+        return Game{
+            .data = [Player::None, ...],
+            .player = Player::X
+        };
+    }
+}
+
+game: mut = Game::new();
+```
+
+## Generic functions
+
+Generic parameters are introduced with `::<T>` after `fn`:
+
+```yoyo
+produce: fn::<T>(val: T) -> T = return val;
+
+// With interface constraint
+takes_intf: fn::<T: impl Interface>(arg: T) = return;
+
+// Multiple generic parameters with constraints
+enumerate: fn::<T: impl core::Iterator::<O>, O>(iter: T) ->
+    EnumerateIter::<T, O> = return EnumerateIter::<T, O>{ .actual_iter = iter, .idx = 0 };
+```
+
+Type arguments are inferred at the call site:
+
+```yoyo
+result := produce(42);          // T = i32, inferred
+takes_intf(obj1);               // T = typeof(obj1), inferred
+```
+
+Or supplied explicitly:
+
+```yoyo
+vecf1 := Vec2::<f32>::new(30.0, 10.0);
+```
+
+## Operator overloads
+
+Operators are overloaded at module scope with `operator: op`:
+
+```yoyo
+// Binary operator (dot product)
+operator: *::<T>(a: Vec2::<T>, b: Vec2::<T>) -> T = {
+    return a.x * b.x + a.y * b.y;
+}
+
+// Immutable subscript
+operator: [](obj: &ColorValue, arg: ColorType) -> &i32 = return &obj.red_val;
+
+// Mutable subscript
+operator: mut [](obj: &mut u32, arg: Indexer) = *obj = arg.val;
+
+// Borrow operator overload
+operator: &::<T>(input: &Wrapper::<T>) -> &T = {
+    return &input.data;
+}
+```
+
+<Note>
+The `mut` modifier before `[]` declares a subscript that returns a mutable reference and can be used on the left-hand side of assignment.
+</Note>
+
+## Lambdas and stored functions
+
+Lambdas are anonymous functions that can capture variables from the enclosing scope.
+
+### Syntax
+
+```yoyo
+// Lambda with captures, assigned to a stored variable
+print_list: stored = ||(list: &List) for (elem in list.iter()) std::println("${*elem}");
+
+// Commented example from test suite showing capture syntax
+// func := |&mut b| {
+//     *b = 40;
+// }
+```
+
+The capture list appears between the outer `|...|`. Each capture specifies ownership:
+
+| Capture form | Meaning                       |
+| ------------ | ----------------------------- |
+| `\|name\|`   | Owned capture (move)          |
+| `\|&name\|`  | Immutable borrow capture      |
+| `\|&mut name\|` | Mutable borrow capture     |
+
+### Stored function type
+
+A variable holding a lambda or function pointer uses the `stored` keyword or an explicit `fn(...)` type:
+
+```yoyo
+print_list: stored = ||(list: &List) { /* ... */ };
+callback:   fn(i32) -> bool = predicate_function;
+```
+
+### Calling a stored function
+
+```yoyo
+print_list(&list);
+callback(42);
+```
+
+## `with` statement
+
+The `with` statement binds the result of an expression for use in a body block:
+
+```yoyo
+with val = expression {
+    // val is bound here
+}
+```
+
+## Module-level functions
+
+Functions at module scope are accessible via the module name:
+
+```yoyo
+// Declaration
+player_text: fn(p: &[Player; 9], alt: i32) -> str = {
+    if (*(*p)[alt] == Player::X) return "X";
+    return "${alt}";
+}
+
+// Called from same module (no qualifier needed)
+row1 := " ${player_text(&this.data, 0)} │ ... ";
+
+// Called from another module
+test::print(&"value");
+```
+
+## Function attributes
+
+Functions can carry attributes that affect access:
+
+```yoyo
+// By default, declarations are private
+// The @public attribute makes a declaration accessible outside the module
+```
+
+<Info>
+Access specifiers (`public`, `private`, `module`) control visibility. Private is the default; use `@[public]` to export a function.
+</Info>

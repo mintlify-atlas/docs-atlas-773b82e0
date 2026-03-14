@@ -1,0 +1,209 @@
+---
+title: Modules
+description: Module declarations, imports, scope resolution with ::, and the using statement in Yoyo.
+---
+
+Yoyo organises code into **modules**. Each source file can declare the modules it depends on, access their contents with the `::` scope-resolution operator, and bring names into the local scope with `using`.
+
+## Declaring a Module Import
+
+At the top of a source file, declare every external module your code will reference:
+
+```yoyo
+app: module = APP
+```
+
+The left-hand side is the local alias you will use to access the module. `APP` is a special token that refers to the host application module — the module provided by the C++ embedder via `addAppModule`. Arbitrary module paths use the module name as a string.
+
+```yoyo
+utils: module = utils
+```
+
+The `ModuleImport` statement stores a `module_name` (the local alias) and a `module_path` (the path string).
+
+---
+
+## The `::` Scope Resolution Operator
+
+Use `::` to access any name from a module, type, enum, or other named scope:
+
+```yoyo
+// Call a function from the app module
+app::func(&"hello");
+
+// Call a function from a test module
+test::print(&"message");
+
+// Construct a generic type from another module
+LinkedList::<str>::new()
+
+// Access an enum variant
+ColorType::Red
+```
+
+`::` can be chained to navigate nested scopes:
+
+```yoyo
+this.actual_iter.core::Iterator::<O>::next()
+```
+
+---
+
+## The `using` Statement
+
+`using` brings one or more names from a scope into the current scope so they can be referenced without the `ModuleName::` prefix. Three forms are available.
+
+### Single Import
+
+```yoyo
+using Module1::Type;
+```
+
+Makes `Type` available in the current scope.
+
+### Multiple Import
+
+Curly braces allow multiple names to be imported from nested scopes in one statement:
+
+```yoyo
+using Module2::{
+    TypeWrapper::{ Type, Type2 }
+};
+```
+
+This brings both `Type` and `Type2` into scope. The nesting mirrors the actual scope hierarchy.
+
+### Wildcard Import
+
+```yoyo
+using Module3::*;
+```
+
+Imports every top-level name exported by `Module3`.
+
+---
+
+## Top-Level vs Block-Scoped `using`
+
+A `using` statement can appear either at the top level of a file or inside a block.
+
+**Top-level** — the name is visible for the entire file:
+
+```yoyo
+using test::print;   // available everywhere in this file
+
+main: fn = {
+    print(&"hello");  // no module prefix needed
+}
+```
+
+**Block-scoped** — the name is only visible inside the enclosing block:
+
+```yoyo
+main: fn = {
+    {
+        using Module1::Type;
+        print(&Type{}.to_str());   // Type is in scope
+    }
+    // Type is no longer visible here
+
+    {
+        using Module2::{
+            TypeWrapper::{ Type, Type2 }
+        };
+        print(&Type{}.to_str());
+        print(&Type2{}.to_str());
+    }
+
+    {
+        using Module3::*;
+        print(&Type{}.to_str());
+    }
+}
+```
+
+<Info>
+Block-scoped `using` is useful for avoiding name collisions when two modules export the same identifier.
+</Info>
+
+---
+
+## Registering Modules from C++
+
+On the C++ side, modules are registered with the engine before compilation.
+
+### Application Module
+
+An application module exposes C++ functions to Yoyo code:
+
+```cpp
+Yoyo::YVMEngine engine;
+auto app_mod = engine.addAppModule("app");
+app_mod->addFunction("(x: &str) -> i32", my_func, "print");
+```
+
+In Yoyo, declare it with `APP`:
+
+```yoyo
+app: module = APP
+```
+
+### Source Module
+
+A source module is Yoyo source code loaded as a string:
+
+```cpp
+std::string source = /* read file */;
+auto mod = engine.addModule("my_module", source);
+```
+
+In Yoyo, import it by the name you passed to `addModule`:
+
+```yoyo
+my_module: module = my_module
+```
+
+<Note>
+Module names are case-sensitive and must match exactly between the `addModule`/`addAppModule` call and the `module` declaration in Yoyo source.
+</Note>
+
+---
+
+## Complete Example
+
+```yoyo
+// File: linked_list.yoyo
+app: module = APP
+
+Node: struct::<T> = {
+    data: T,
+    next: (^Node::<T>)?
+}
+
+LinkedList: struct::<T> = {
+    first: (^Node::<T>)?,
+    new: fn -> This = return This{ .first = null };
+    append: fn (&mut this, value: T) = {
+        if |val| (this.first) {
+            last: mut = val;
+            should_loop: mut = true;
+            while (should_loop) {
+                if |nxt| (last.next) last = nxt;
+                else should_loop = false;
+            }
+            last.next = gcnew Node::<T>{ .data = value, .next = null };
+        } else {
+            this.first = gcnew Node::<T>{ .data = value, .next = null };
+        }
+    }
+}
+
+main: fn = {
+    a: mut = LinkedList::<str>::new();
+    a.append("Hello");
+    a.append("World");
+    for (lol in a.iter().enumerate()) {
+        app::func(&"${lol.0}: ${*lol.1}");
+    }
+}
+```

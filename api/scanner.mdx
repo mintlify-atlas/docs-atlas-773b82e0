@@ -1,0 +1,150 @@
+---
+title: Scanner
+description: Lexer that converts Yoyo source text into a stream of tokens.
+---
+
+`Yoyo::Scanner` tokenizes a Yoyo source string, producing `Token` values one at a time. It is used internally by `Parser` and is not normally needed directly.
+
+## Class definition
+
+```cpp
+#include <yoyo/scanner.h>
+
+namespace Yoyo {
+    class Scanner {
+    public:
+        explicit Scanner(std::string_view source);
+
+        std::optional<Token>         NextToken();
+        std::optional<Token>         NextTokenInternal();
+        size_t                       GetLine();
+        size_t                       GetOffset() const;
+        SourceLocation               GetSourceLocation() const;
+    };
+}
+```
+
+## Constructor
+
+### `Scanner(std::string_view source)`
+
+```cpp
+explicit Scanner(std::string_view source);
+```
+
+Constructs a scanner over the given source text. The scanner holds a `string_view` — the underlying string must remain alive while the scanner is in use.
+
+<ParamField path="source" type="std::string_view" required>
+  The Yoyo source text to tokenize.
+</ParamField>
+
+## Methods
+
+### `NextToken()`
+
+```cpp
+std::optional<Token> NextToken();
+```
+
+Returns the next meaningful token, skipping whitespace, newlines that are not syntactically significant, and comments. Returns `std::nullopt` at end of file.
+
+### `NextTokenInternal()`
+
+```cpp
+std::optional<Token> NextTokenInternal();
+```
+
+Low-level variant of `NextToken()` that returns every token including newlines and other tokens that `NextToken()` would normally skip. Used internally by the parser when newline significance matters.
+
+### `GetLine()`
+
+```cpp
+size_t GetLine();
+```
+
+Returns the 1-based line number of the current scanner position.
+
+### `GetOffset()`
+
+```cpp
+size_t GetOffset() const;
+```
+
+Returns the current byte offset into the source string.
+
+### `GetSourceLocation()`
+
+```cpp
+SourceLocation GetSourceLocation() const;
+```
+
+Returns a `SourceLocation` describing the current position in the source file.
+
+## Supporting types
+
+### `SourceLocation`
+
+```cpp
+// yoyo/source_location.h
+namespace Yoyo {
+    struct SourceLocation {
+        size_t line   = 0;  // 1-based line number
+        size_t column = 0;  // 1-based column number
+    };
+}
+```
+
+### `Token`
+
+```cpp
+// yoyo/token.h
+namespace Yoyo {
+    struct Token {
+        TokenType      type;
+        SourceLocation loc;
+        std::string_view text;
+    };
+}
+```
+
+`text` is a view into the original source string. It is valid for as long as the source string is alive.
+
+<Expandable title="TokenType values">
+
+| Category | Values |
+|---|---|
+| Literals | `IntegerLiteral`, `RealLiteral`, `StringLiteral`, `CharLiteral`, `True`, `False`, `Null` |
+| Identifiers | `Identifier`, `SPIdentifier` |
+| Arithmetic | `Plus`, `Minus`, `Star`, `Slash`, `Percent` |
+| Comparison | `Less`, `Greater`, `DoubleEqual`, `LessEqual`, `GreaterEqual`, `BangEqual` |
+| Assignment | `Equal`, `PlusEqual`, `MinusEqual`, `StarEqual`, `SlashEqual`, `PercentEqual`, `AmpersandEqual`, `PipeEqual`, `CaretEqual` |
+| Logical | `DoubleAmpersand`, `DoublePipe`, `Bang` |
+| Bitwise | `Ampersand`, `Pipe`, `Caret`, `DoubleGreater`, `DoubleLess` |
+| Delimiters | `LParen`, `RParen`, `LCurly`, `RCurly`, `LSquare`, `RSquare` |
+| Punctuation | `Dot`, `Comma`, `Colon`, `DoubleColon`, `SemiColon`, `Arrow`, `DoubleDot`, `DoubleDotEqual` |
+| Keywords | `If`, `Else`, `While`, `For`, `Return`, `Class`, `Struct`, `Enum`, `Union`, `Interface`, `Module`, `Using`, `Fn`, `Alias`, `As`, `In`, `InOut`, `This`, `Pub`, `Static`, `Mut`, `Const`, `Break`, `Continue`, `Spawn`, `Try`, `With`, `Impl`, `Macro` |
+| Special | `TemplateOpen` (`::<`), `AttrOpen` (`#(`), `Spaceship` (`<=>`), `GCNew`, `RefMut`, `Underscore`, `View`, `Directive` |
+| Control | `Eof`, `NewLine`, `Invalid` |
+
+</Expandable>
+
+## Example
+
+```cpp
+#include <yoyo/scanner.h>
+
+std::string src = "main: fn -> i32 = return 42;";
+Yoyo::Scanner scanner(src);
+
+while (auto tok = scanner.NextToken()) {
+    // process tok->type and tok->text
+}
+```
+
+<Note>
+In practice you do not need to use `Scanner` directly. Construct a `Parser` instead — it owns the scanner internally.
+</Note>
+
+## See also
+
+- [Parser](/api/parser) — uses Scanner internally

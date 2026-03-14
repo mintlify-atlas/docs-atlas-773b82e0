@@ -1,0 +1,343 @@
+---
+title: Classes and structs
+description: struct vs class, ownership semantics, field declarations, methods, constructors, and interface implementations in Yoyo.
+---
+
+Yoyo has two composite type keywords: `struct` and `class`. Both declare types with named fields and methods, but they differ in memory semantics.
+
+## `struct` — value type
+
+A `struct` is a value type. Instances are stack-allocated by default and copied on assignment.
+
+```yoyo
+Vector2: struct = {
+    x: i32,
+    y: i32
+}
+
+Vec2: struct::<T> = {
+    x: T, y: T,
+    new: fn(x: T, y: T) -> Vec2::<T> = return Vec2::<T>{ .x, .y };
+    to_str: fn(&this) -> str = return "{ ${this.x}, ${this.y} }";
+}
+```
+
+## `class` — reference type
+
+A `class` is a reference type with explicit ownership semantics. It supports GC allocation and methods with ownership-aware receivers.
+
+```yoyo
+GenericType: class::<T> = {
+    value: T,
+    new: fn -> GenericType::<T> = return;
+    use: fn(&this) -> T = return this.value;
+}
+```
+
+### Reference-semantic class: `struct:&`
+
+Appending `:&` to `struct` (or `class`) makes the type use reference semantics for iterators and similar non-owning views:
+
+```yoyo
+LinkedListIterator: struct:&::<T> impl core::Iterator::<&T> = {
+    curr: (^Node::<T>)?,
+    impl core::Iterator::<&T> {
+        next: fn(&mut this) -> (&T)? = {
+            if |node| (this.curr) {
+                this.curr = node.next;
+                return &node.data;
+            }
+            else return null;
+        }
+    }
+}
+```
+
+<Note>
+`struct:&` types are intended for non-owning, iterator-like types that hold references into another data structure.
+</Note>
+
+## Ownership enum
+
+The `Ownership` enum controls a class's memory semantics:
+
+| Value          | Meaning                                        |
+| -------------- | ---------------------------------------------- |
+| `Owning`       | Type owns its data; destructor is called on drop |
+| `NonOwning`    | Non-owning reference view (no destructor)      |
+| `NonOwningMut` | Mutable non-owning reference view              |
+
+This is selected implicitly based on whether you write `struct`, `class`, or `struct:&`.
+
+## Field declarations
+
+Fields are declared inside the body block as `name: Type`:
+
+```yoyo
+ColorValue: struct = {
+    red_val:   i32,
+    green_val: i32,
+    blue_val:  i32
+}
+
+Node: struct::<T> = {
+    data: T,
+    next: (^Node::<T>)?    // optional GC pointer to next node
+}
+
+Game: struct = {
+    data:   [Player; 9],   // static array field
+    player: Player
+}
+```
+
+Multiple fields can be declared on one line separated by commas:
+
+```yoyo
+Vec2: struct::<T> = {
+    x: T, y: T,
+    ...
+}
+```
+
+### Static fields
+
+A field can be marked static (shared across all instances):
+
+```yoyo
+Counter: struct = {
+    count: i32,
+    total: i32   // static fields share storage across instances
+}
+```
+
+## Methods
+
+Methods are functions declared inside the body block. They follow the same `name: fn(params) -> Return = body;` form.
+
+### Immutable receiver
+
+```yoyo
+Vec2: struct::<T> = {
+    x: T, y: T,
+    to_str: fn(&this) -> str = return "{ ${this.x}, ${this.y} }";
+}
+```
+
+### Mutable receiver
+
+```yoyo
+LinkedList: struct::<T> = {
+    first: (^Node::<T>)?,
+    append: fn(&mut this, value: T) = {
+        // ...
+        this.first = gcnew Node::<T>{ .data = value, .next = null };
+    }
+}
+```
+
+### No receiver (static method)
+
+```yoyo
+Vec2: struct::<T> = {
+    x: T, y: T,
+    new: fn(x: T, y: T) -> Vec2::<T> = return Vec2::<T>{ .x, .y };
+}
+
+// Called as:
+vec := Vec2::<i32>::new(10, 20);
+```
+
+### `This` keyword
+
+Inside the body, `This` resolves to the enclosing type. Use it to avoid repeating type parameters:
+
+```yoyo
+LinkedList: struct::<T> = {
+    first: (^Node::<T>)?,
+    new: fn -> This = return This{ .first = null };
+    from_array: fn(arr: mut [T]) -> This = {
+        list: This = This{ .first = null };
+        return list;
+    }
+}
+```
+
+## Constructors
+
+Yoyo does not have a built-in constructor syntax. The idiomatic pattern is a static `new` function that returns the type:
+
+```yoyo
+Game: struct = {
+    data:   [Player; 9],
+    player: Player,
+    new: fn -> Game = {
+        return Game{
+            .data = [
+                Player::None, Player::None, Player::None,
+                Player::None, Player::None, Player::None,
+                Player::None, Player::None, Player::None
+            ],
+            .player = Player::X
+        };
+    }
+}
+
+game: mut = Game::new();
+```
+
+Object literals use the `.field = value` named syntax, or `.field` shorthand when the local variable name matches the field name:
+
+```yoyo
+// Named
+vec := Vec2::<i32>{ .x = 10, .y = 20 };
+
+// Shorthand — assigns local `x` to field `x`, local `y` to field `y`
+vec := Vec2::<T>{ .x, .y };
+```
+
+## Generic structs and classes
+
+Append `::<T, ...>` to introduce type parameters:
+
+```yoyo
+Wrapper: struct::<T> = {
+    data: T
+}
+
+GenericType: class::<T> = {
+    value: T,
+    new: fn -> GenericType::<T> = return;
+}
+
+// Multi-parameter
+EnumerateIter: struct:&::<T, O> impl core::Iterator::<(u64, O)> = {
+    actual_iter: T,
+    idx: u64,
+    ...
+}
+```
+
+Instantiate by supplying type arguments or letting them be inferred:
+
+```yoyo
+a: mut = LinkedList::<str>::new();
+list := List::<i32>::from_array([10, 20, 30, 40, 50]);
+```
+
+## Interface implementations
+
+A struct or class can implement one or more interfaces. Declare the implementation inside the body using an `impl` block:
+
+```yoyo
+LinkedListIterator: struct:&::<T> impl core::Iterator::<&T> = {
+    curr: (^Node::<T>)?,
+    impl core::Iterator::<&T> {
+        next: fn(&mut this) -> (&T)? = {
+            if |node| (this.curr) {
+                this.curr = node.next;
+                return &node.data;
+            }
+            else return null;
+        }
+    }
+}
+```
+
+The `impl InterfaceName` marker on the struct declaration is followed by a matching `impl InterfaceName { }` block inside the body containing the method implementations.
+
+For generic interface implementations:
+
+```yoyo
+Generic1: struct::<T> = {
+    impl Interface { }
+    impl InterfaceWrapper::<T>::Interface { }
+    new: fn -> Generic1::<T> = return;
+}
+```
+
+## Unions
+
+A `union` is a tagged union (sum type) similar to Rust enums. Variants can carry data:
+
+```yoyo
+Color: union = {
+    ColorRGB: struct = { r: u8, g: u8, b: u8, a: u8 }
+
+    RGB: ColorRGB,
+    Hex: u32,
+
+    to_str: fn(&this) -> str = {
+        if |rgb| ((*this) as RGB) return "rgb: ${rgb.r}, ${rgb.g}, ${rgb.b}, ${rgb.a}";
+        else if |hex| ((*this) as Hex) return "hex: ${hex}";
+        else return "Undefined";
+    }
+}
+
+// Construction
+c1 := Color::RGB(Color::ColorRGB{ .r = 10, .g = 20, .b = 22, .a = 40 });
+c2 := Color::Hex(12456);
+
+// Pattern matching
+if |rgb| ((*c1) as RGB) { /* use rgb */ }
+```
+
+## Enums
+
+Enums declare a fixed set of named integer variants:
+
+```yoyo
+Player: enum = { X, O, None }
+
+// Variant access
+if (p == Player::X) return Player::O;
+```
+
+## Access control
+
+Declarations inside a type body are private by default. Use `@[public]` to export:
+
+```yoyo
+MyType: struct = {
+    internal_field: i32,     // private
+}
+```
+
+<Info>
+The access specifiers are `Public` (every entity), `Private` (only friends), and `Module` (within the same module). There is no `protected` because Yoyo does not support inheritance.
+</Info>
+
+## Complete example
+
+A generic linked list from the test suite:
+
+```yoyo
+Node: struct::<T> = {
+    data: T,
+    next: (^Node::<T>)?
+}
+
+LinkedList: struct::<T> = {
+    first: (^Node::<T>)?,
+    new: fn -> This = return This{ .first = null };
+    append: fn(&mut this, value: T) = {
+        if |val| (this.first) {
+            last: mut = val;
+            should_loop: mut = true;
+            while (should_loop) {
+                if |nxt| (last.next) last = nxt;
+                else should_loop = false;
+            }
+            last.next = gcnew Node::<T>{ .data = value, .next = null };
+        } else {
+            this.first = gcnew Node::<T>{ .data = value, .next = null };
+        }
+    }
+}
+
+main: fn = {
+    a: mut = LinkedList::<str>::new();
+    a.append("Hello");
+    a.append("World");
+}
+```

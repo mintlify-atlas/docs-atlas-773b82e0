@@ -1,0 +1,221 @@
+---
+title: "Backends"
+description: "Compare the YVM and LLVM backends and configure your build with Meson."
+---
+
+Yoyo supports two JIT compilation backends. They expose the same high-level API but differ in dependencies, performance characteristics, and the exact methods available.
+
+## Comparison
+
+| | YVM | LLVM |
+|---|---|---|
+| **Header** | `<yvm/yvm_engine.h>` | `<llvm/llvm_engine.h>` |
+| **App module header** | `<yvm/app_module.h>` | `<llvm/app_module.h>` |
+| **Engine class** | `Yoyo::YVMEngine` | `Yoyo::LLVMEngine` |
+| **App module class** | `Yoyo::YVMAppModule` | `Yoyo::LLVMAppModule` |
+| **JIT strategy** | Custom bytecode VM | LLVM ORC JIT |
+| **Dependencies** | `yoyo-vm` subproject, `libffi` | LLVM (static or shared) |
+| **Build time** | Fast | Slow (LLVM is large) |
+| **Peak throughput** | Moderate | High |
+| **`findFunction`** | Yes | No (not yet exposed) |
+| **`createFiber`** | Yes | No (not yet exposed) |
+| **`addStaticLibrary`** | No | Yes |
+| **`addDynamicLibrary`** | Yes | Yes |
+
+<Note>
+The LLVM backend's `findFunction` and `createFiber` are not yet part of the public `LLVMEngine` API. Use the YVM backend when you need to call Yoyo functions from C++.
+</Note>
+
+## Selecting a backend with Meson
+
+The `executor` option in `meson.options` controls which backend(s) are compiled:
+
+```ini meson.options
+option('executor', type: 'combo', choices: ['llvm', 'yvm', 'both'], value: 'yvm')
+option('llvm_static', type: 'boolean', value: true)
+```
+
+Pass the option at configure time:
+
+```bash
+# Build with YVM only (default)
+meson setup build -Dexecutor=yvm
+
+# Build with LLVM only
+meson setup build -Dexecutor=llvm
+
+# Build both backends
+meson setup build -Dexecutor=both
+
+# Use shared LLVM instead of static
+meson setup build -Dexecutor=llvm -Dllvm_static=false
+```
+
+## YVM backend
+
+The YVM backend uses a custom bytecode virtual machine implemented in the `yoyo-vm` subproject, with `libffi` for calling into native libraries.
+
+### Headers and engine
+
+```cpp
+#include <yvm/yvm_engine.h>
+#include <yvm/app_module.h>
+
+Yoyo::YVMEngine engine;
+Yoyo::YVMAppModule* app = engine.addAppModule("myapp");
+```
+
+### YVM-specific API
+
+```cpp
+class YVMEngine : public Engine {
+public:
+    YVMAppModule* addAppModule(const std::string& name);
+    ModuleBase*   addModule(const std::string& name, std::string source);
+    bool          compile();
+    void          prepareForExecution();
+    void          addDynamicLibrary(std::string_view path);
+
+    // Fiber / function execution
+    Fiber                      createFiber(const FunctionTy& fn);
+    std::optional<FunctionTy>  findFunction(ModuleBase* mod, const std::string& name);
+    void*                      findNativeFunction(const std::string& name);
+
+    // Type system helpers
+    size_t          getTypeSpawnIdx(const Type& tp);
+    StructTypeSelector  struct_manager;
+    UnionTypeSelector   union_manager;
+    Yvm::VM             vm;
+};
+```
+
+### YVM example
+
+```cpp
+#include <yvm/yvm_engine.h>
+#include <yvm/app_module.h>
+
+Yoyo::YVMEngine engine;
+auto app = engine.addAppModule("app");
+app->addFunction("(x: &str) -> i32",
+    [](void* s) -> int32_t {
+        std::cout << Yoyo::Engine::viewString(s) << '\n';
+        return 0;
+    }, "print");
+
+auto mod = engine.addModule("main", source);
+engine.compile();
+engine.prepareForExecution();
+
+auto fn  = engine.findFunction(mod, mod->module_hash + "main").value();
+auto fib = engine.createFiber(fn);
+engine.execute();
+```
+
+## LLVM backend
+
+The LLVM backend emits LLVM IR and uses the ORC JIT layer to produce fully optimized native machine code.
+
+### Headers and engine
+
+```cpp
+#include <llvm/llvm_engine.h>
+#include <llvm/app_module.h>
+
+Yoyo::LLVMEngine engine;
+Yoyo::LLVMAppModule* app = engine.addAppModule("myapp");
+```
+
+### LLVM-specific API
+
+```cpp
+class LLVMEngine : public Engine {
+public:
+    LLVMAppModule* addAppModule(const std::string& name);
+    void           addModule(const std::string& name, std::string source);
+    void           compile();
+    void           prepareForExecution();
+    void           addStaticLibrary(std::string_view path);  // LLVM only
+    void           addDynamicLibrary(std::string_view path);
+
+    // LLVM internals
+    llvm::orc::ThreadSafeContext    llvm_context;
+    std::unique_ptr<llvm::orc::LLJIT> jit;
+};
+```
+
+### LLVM example
+
+<Tabs>
+  <Tab title="LLVM backend">
+    ```cpp
+    #include <llvm/llvm_engine.h>
+    #include <llvm/app_module.h>
+
+    Yoyo::LLVMEngine engine;
+    auto app = engine.addAppModule("app");
+    app->addFunction("(x: &str) -> i32",
+        [](void* s) -> int32_t {
+            std::cout << Yoyo::Engine::viewString(s) << '\n';
+            return 0;
+        }, "print");
+
+    engine.addModule("main", source);
+    engine.compile();
+    engine.prepareForExecution();
+    // findFunction / createFiber not available on LLVMEngine yet
+    engine.execute();
+    ```
+  </Tab>
+  <Tab title="YVM backend">
+    ```cpp
+    #include <yvm/yvm_engine.h>
+    #include <yvm/app_module.h>
+
+    Yoyo::YVMEngine engine;
+    auto app = engine.addAppModule("app");
+    app->addFunction("(x: &str) -> i32",
+        [](void* s) -> int32_t {
+            std::cout << Yoyo::Engine::viewString(s) << '\n';
+            return 0;
+        }, "print");
+
+    auto mod = engine.addModule("main", source);
+    engine.compile();
+    engine.prepareForExecution();
+
+    auto fn  = engine.findFunction(mod, mod->module_hash + "main").value();
+    auto fib = engine.createFiber(fn);
+    engine.execute();
+    ```
+  </Tab>
+</Tabs>
+
+## Adding libraries
+
+<Tabs>
+  <Tab title="YVM">
+    ```cpp
+    engine.addDynamicLibrary("mylib.dll"); // or .so on Linux
+    ```
+  </Tab>
+  <Tab title="LLVM">
+    ```cpp
+    engine.addDynamicLibrary("mylib.so");
+    engine.addStaticLibrary("mylib.a");   // LLVM only
+    ```
+  </Tab>
+</Tabs>
+
+Call these before `compile()`.
+
+## Which backend should you choose?
+
+<CardGroup cols={2}>
+  <Card title="Choose YVM" icon="microchip">
+    You want fast iteration, lighter dependencies, or need `findFunction`/`createFiber` to call Yoyo functions from C++.
+  </Card>
+  <Card title="Choose LLVM" icon="bolt">
+    Your scripts are performance-critical and run for a long time. You are already depending on LLVM in your project.
+  </Card>
+</CardGroup>

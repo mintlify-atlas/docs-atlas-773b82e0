@@ -1,0 +1,330 @@
+---
+title: Types
+description: Complete reference for Yoyo's type system — primitives, references, arrays, tuples, optionals, results, and function types.
+---
+
+Yoyo is statically typed. Every binding has a type known at compile time. The type system includes primitive scalars, reference types, collection types, compound types, and user-defined types.
+
+## Primitive types
+
+### Integer types
+
+<Tabs>
+  <Tab title="Signed">
+
+| Type  | Width   | Range                                          |
+| ----- | ------- | ---------------------------------------------- |
+| `i8`  | 8-bit   | −128 to 127                                    |
+| `i16` | 16-bit  | −32,768 to 32,767                              |
+| `i32` | 32-bit  | −2,147,483,648 to 2,147,483,647               |
+| `i64` | 64-bit  | −9,223,372,036,854,775,808 to 9,223,372,036,854,775,807 |
+
+```yoyo
+counter: i32 = 0;
+big:     i64 = 9_000_000_000;
+```
+
+  </Tab>
+  <Tab title="Unsigned">
+
+| Type  | Width   | Range              |
+| ----- | ------- | ------------------ |
+| `u8`  | 8-bit   | 0 to 255           |
+| `u16` | 16-bit  | 0 to 65,535        |
+| `u32` | 32-bit  | 0 to 4,294,967,295 |
+| `u64` | 64-bit  | 0 to 18,446,744,073,709,551,615 |
+
+```yoyo
+b: mut u32 = 100;
+idx: u64  = 0;
+```
+
+  </Tab>
+</Tabs>
+
+Integer literals are inferred as `i32` by default unless the context requires a different type.
+
+### Floating-point types
+
+| Type  | Width  | Precision         |
+| ----- | ------ | ----------------- |
+| `f32` | 32-bit | ~7 decimal digits |
+| `f64` | 64-bit | ~15 decimal digits |
+
+```yoyo
+pi:     f32 = 3.14;
+precise: f64 = 3.141592653589793;
+```
+
+### `bool`
+
+Boolean values are `true` or `false`.
+
+```yoyo
+flag: bool = true;
+done: mut bool = false;
+```
+
+### `char`
+
+A single Unicode code point (32-bit).
+
+```yoyo
+letter: char = 'A';
+```
+
+### `str`
+
+A heap-allocated, owned UTF-8 string. String literals produce `str` values. Interpolated strings also produce `str`.
+
+```yoyo
+greeting: str = "Hello, world!";
+message  := "x = ${x}";
+```
+
+<Note>
+Passing a string to a function that accepts `&str` requires an explicit borrow: `&"literal"` or `&variable`.
+</Note>
+
+### `void`
+
+Represents the absence of a value. Used as the return type of functions that do not return a value.
+
+```yoyo
+print: fn(msg: &str) -> void = { /* ... */ }
+
+// void return type is often omitted from the signature
+do_work: fn(x: i32) = { /* ... */ }
+```
+
+### `ptr`
+
+An opaque, untyped pointer for C interop. Does not participate in Yoyo's ownership or borrow model.
+
+```yoyo
+raw: ptr = get_c_pointer();
+```
+
+<Warning>
+`ptr` bypasses memory safety. Prefer typed references (`&T`, `&mut T`) everywhere possible.
+</Warning>
+
+## Reference types
+
+References are non-owning views into an existing value. They are always valid — Yoyo's borrow checker ensures no dangling references.
+
+| Syntax    | Meaning                  |
+| --------- | ------------------------ |
+| `&T`      | Immutable borrow of `T`  |
+| `&mut T`  | Mutable borrow of `T`    |
+
+```yoyo
+func: fn(x: &mut i32, y: &mut i32) = return;
+
+main: fn = {
+    b: i32 = 10;
+    ref_b: &i32 = &b;
+
+    mut_val: mut i32 = 5;
+    r: &mut i32 = &mut mut_val;
+    *r = 42;
+}
+```
+
+Method receivers use the same syntax (see [Functions](/language/functions)).
+
+## Garbage-collected reference: `^T`
+
+`^T` is a GC-managed owned pointer. Allocate with `gcnew`.
+
+```yoyo
+b: i32 = 10;
+a: ^i32 = gcnew b;
+
+node: ^Node::<T> = gcnew Node::<T>{ .data = value, .next = null };
+```
+
+`^mut T` is a mutable GC reference:
+
+```yoyo
+first: (^mut Node::<T>)?     // mutable GC pointer wrapped in Optional
+current: ^mut Node::<T> = list.first.value();
+```
+
+<Note>
+GC references are reference-counted with cycle detection. Passing the same `^T` twice to a function requiring two distinct `&mut T` borrows will panic at runtime.
+</Note>
+
+## Array types
+
+### Static arrays: `[T; N]`
+
+A fixed-size array of `N` elements of type `T`, stack-allocated.
+
+```yoyo
+arr: [i32; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+board: [Player; 9] = [
+    Player::None, Player::None, Player::None,
+    Player::None, Player::None, Player::None,
+    Player::None, Player::None, Player::None
+];
+```
+
+Repeat syntax fills an array with a constant value:
+
+```yoyo
+zeros: [i64; 10] = [10; constant];  // 10 elements, each equal to `constant`
+```
+
+### Dynamic arrays: `[T]`
+
+A heap-allocated, growable array.
+
+```yoyo
+values: [i32] = [1, 2, 3, 4, 5];
+```
+
+### Slices: `&[T]` and `&mut [T]`
+
+A non-owning view over a contiguous sequence of `T`.
+
+```yoyo
+takes_slice: fn(s: &[i32]) = { /* ... */ }
+```
+
+## Tuple types: `(T1, T2, ...)`
+
+An ordered, fixed-length collection of heterogeneous values.
+
+```yoyo
+pair: (u64, str) = (0, "first");
+
+// Access fields by index
+app::func(&"${pair.0}: ${*pair.1}");
+```
+
+Tuples appear naturally in iterators that yield index-value pairs:
+
+```yoyo
+for (lol in list.enumerate()) {
+    app::func(&"${lol.0}: ${*lol.1}");
+}
+```
+
+## Optional types: `T?`
+
+An optional holds either a value of type `T` or `null`.
+
+```yoyo
+result: Player?  = null;
+first:  (^Node::<T>)? = null;
+```
+
+Use conditional extraction to safely access the inner value:
+
+```yoyo
+if |val| (maybe_value) {
+    // val: T
+} else {
+    // was null
+}
+
+// While iterating
+if |nxt| (this.first) {
+    last: mut = nxt;
+}
+```
+
+Common optional methods:
+- `.has_value()` — returns `bool`
+- `.value()` — returns the inner value (panics if null)
+
+## Result types: `T \ E`
+
+A result holds either a success value of type `T` or an error value of type `E`.
+
+```yoyo
+main: fn -> i32 \ str = {
+    result: mut = test::return_result();
+    // .try propagates the error upward on failure
+    obj := result.try;
+    return obj;
+}
+```
+
+The `\` separator distinguishes the success type from the error type. Use `.try` to propagate errors (analogous to `?` in Rust).
+
+## Function types: `fn(T1, T2) -> R`
+
+First-class stored functions have the type `fn(params) -> Return`.
+
+```yoyo
+callback: fn(i32) -> bool = some_predicate;
+
+// Stored lambda
+print_list: stored = ||(list: &List) for (elem in list.iter()) std::println("${*elem}");
+```
+
+See [Functions](/language/functions) for lambdas and stored function types.
+
+## Generic types
+
+User-defined types can be parameterized with one or more type parameters using `::<T>` syntax:
+
+```yoyo
+Node: struct::<T> = {
+    value: T,
+    next: (^Node::<T>)?
+}
+
+// Instantiation
+node: ^Node::<i32> = gcnew Node::<i32>{ .value = 42, .next = null };
+list := List::<str>::new();
+```
+
+Type arguments can often be inferred:
+
+```yoyo
+veci2 := Vec2::new(20, 30);           // T inferred as i32
+vecf2 := Vec2::new(100.0, 20.0);     // T inferred as f32
+```
+
+## Type aliases
+
+Aliases introduce a new name for an existing type:
+
+```yoyo
+Index:   alias = u64;
+Matrix4: alias = [f32; 16];
+```
+
+Generic aliases:
+
+```yoyo
+ElementTy: alias = &T;
+```
+
+(Inside a generic context, `T` refers to the enclosing type parameter.)
+
+## Type overview
+
+<CardGroup cols={2}>
+  <Card title="Scalars" icon="hash">
+    `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `f32` `f64` `bool` `char`
+  </Card>
+  <Card title="Strings" icon="text">
+    `str` — owned heap string. `&str` — immutable borrow.
+  </Card>
+  <Card title="References" icon="link">
+    `&T` immutable borrow. `&mut T` mutable borrow. `^T` GC pointer.
+  </Card>
+  <Card title="Collections" icon="table">
+    `[T; N]` static array. `[T]` dynamic array. `&[T]` slice. `(T1, T2)` tuple.
+  </Card>
+  <Card title="Sum types" icon="circle-question">
+    `T?` optional. `T \ E` result.
+  </Card>
+  <Card title="Specials" icon="gear">
+    `void` no value. `ptr` opaque C pointer. `fn(T) -> R` stored function.
+  </Card>
+</CardGroup>

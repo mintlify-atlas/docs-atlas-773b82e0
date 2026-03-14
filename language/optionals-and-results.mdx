@@ -1,0 +1,152 @@
+---
+title: Optionals and Results
+description: Optional types (T?), Result types (T \ E), the try operator, and null literal in Yoyo.
+---
+
+Yoyo provides two built-in error-handling types: **optionals** (`T?`) represent values that may or may not exist, and **results** (`T \ E`) represent either a success value or an error. Both integrate deeply with the language's control-flow syntax.
+
+## Optional Types
+
+An optional holds either a value of type `T` or nothing. The `?` suffix creates an optional type.
+
+```yoyo
+// Variable with an optional i32
+maybe_num: i32? = null;
+
+// Optional pointer field in a struct
+Node: struct::<T> = {
+    data: T,
+    next: (^Node::<T>)?   // optional GC pointer to the next node
+}
+```
+
+Internally, `T?` is represented as `__opt<T>`.
+
+### The `null` Literal
+
+`null` creates an empty optional. It can be assigned to any optional-typed binding.
+
+```yoyo
+no_value: str? = null;
+```
+
+### Conditional Extraction
+
+To access the inner value of an optional you use a **conditional extraction expression**. This is the `if |name| (expr)` form — it evaluates `expr`, and if it contains a value the binding `name` is introduced in the body holding that value. The `else` branch executes when the optional is empty.
+
+```yoyo
+if |val| (maybe_num) {
+    // val: i32 is live here
+    use(val);
+} else {
+    // optional was empty
+}
+```
+
+The captured binding can be owned, a reference, or a mutable reference:
+
+```yoyo
+// Capture as reference
+if |&node| (this.curr) {
+    // node: &Node is live here
+}
+
+// Capture as mutable reference
+if |&mut num_ref| (val as Circle) {
+    *num_ref = 200;
+}
+```
+
+#### Linked List Iterator Example
+
+The pattern appears throughout real Yoyo code. The `LinkedListIterator` advances by extracting the current node:
+
+```yoyo
+LinkedListIterator: struct:&::<T> impl core::Iterator::<&T> = {
+    curr: (^Node::<T>)?,
+    impl core::Iterator::<&T>
+    {
+        next: fn (&mut this) -> (&T)? = {
+            if |node| (this.curr) {
+                this.curr = node.next;
+                return &node.data;
+            }
+            else return null;
+        }
+    }
+}
+```
+
+`node.next` is itself a `(^Node::<T>)?`, so extracting it re-assigns `this.curr` and the loop continues naturally.
+
+<Note>
+Conditional extraction works on both optional types (`T?`) and result types (`T \ E`). For results the `else` branch can capture the error value with its own binding.
+</Note>
+
+---
+
+## Result Types
+
+A result type `T \ E` holds either a success value of type `T` or an error value of type `E`. Internally it is represented as `__res<T, E>`.
+
+```yoyo
+// A function that returns i32 or a str error
+parse_number: fn(input: &str) -> i32 \ str = {
+    // ...
+}
+```
+
+Function return types use `T \ E` the same way as any other type:
+
+```yoyo
+main: fn -> i32 \ str = {
+    // ...
+}
+```
+
+### The `try` Operator
+
+The postfix `.try` operator unwraps the success value from a result. If the result holds an error, it **propagates** that error by returning early from the enclosing function — analogous to Rust's `?` operator.
+
+```yoyo
+constant: const i32 = 10;
+main: fn -> i32 \ str = {
+    result: mut = test::return_result();    // -> [i64; 10] \ str
+    obj := if(true) {
+        result.try                           // unwrap or propagate
+    } else {
+        [10; constant]
+    }
+}
+```
+
+Here `result.try` either yields the `[i64; 10]` success value or returns early with the `str` error. The enclosing function's return type must be a compatible result type.
+
+<Warning>
+`.try` can only appear inside a function whose return type is a result (`T \ E`). Using it in a non-result-returning function is a compile error.
+</Warning>
+
+### Extracting Results with Conditional Extraction
+
+Like optionals, results can be pattern-matched with `if |name| (expr)`:
+
+```yoyo
+if |val| (parse_number(input)) {
+    // val: i32 — success branch
+} else {
+    // error branch
+}
+```
+
+---
+
+## Summary
+
+<CardGroup cols={2}>
+  <Card title="Optional: T?" icon="circle-question">
+    Holds a value or nothing. Use `null` to create an empty optional. Extract with `if |name| (expr)`.
+  </Card>
+  <Card title="Result: T \ E" icon="triangle-exclamation">
+    Holds a success value or an error. Propagate errors automatically with `.try`. Extract with `if |name| (expr)`.
+  </Card>
+</CardGroup>

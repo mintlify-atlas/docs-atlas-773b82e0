@@ -1,0 +1,244 @@
+---
+title: IRGenerator
+description: Abstract base class for Yoyo IR/code generation backends.
+---
+
+`Yoyo::IRGenerator` is the abstract base that both the LLVM and YVM backends implement. It walks the AST produced by `Parser` and emits backend-specific intermediate representation. It also provides shared analysis utilities (type checking, name shadowing detection, generic instantiation) used by all backends.
+
+<Note>
+You rarely interact with `IRGenerator` directly. It is instantiated internally by the engine when you call `Engine::compile()`.
+</Note>
+
+## Class definition
+
+```cpp
+#include <yoyo/ir_gen.h>
+
+namespace Yoyo {
+    class IRGenerator {
+    public:
+        // --- Context ---
+        SourceView* view;
+        Type        this_t;      // type of `this` in a method
+        Type        return_t;    // expected return type of the current function
+        bool        in_class = false;
+        ModuleBase* module;
+        std::string block_hash;
+        bool        has_error = false;
+
+        // --- Shared utilities ---
+        void error(const Error& err);
+        bool isShadowing(const std::string& name) const;
+        void saturateSignature(FunctionSignature& sig, ModuleBase* md);
+        void annotateClass(ClassDeclaration*);
+        void checkClass(ClassDeclaration*);
+
+        static FunctionDeclaration* GetParentFunction(ASTNode* node);
+
+        template<std::ranges::forward_range T>
+        static std::string mangleGenericArgs(const T& list);
+
+        std::optional<Type> inferReturnType(Statement* stat);
+
+        void generateGenericFunction(...);
+        void generateGenericClass(...);
+        void generateGenericAlias(...);
+        void generateGenericInterface(...);
+
+        // --- Pure virtual — implemented per backend ---
+        virtual std::optional<Type> getVariableType(const std::string& name, Expression*) = 0;
+        virtual void doFunction(FunctionDeclaration*)  = 0;
+        virtual void doClass(ClassDeclaration*)        = 0;
+        virtual void doAlias(AliasDeclaration*)        = 0;
+        virtual void doConst(ConstantDeclaration*)     = 0;
+    };
+}
+```
+
+## Context fields
+
+<ResponseField name="view" type="SourceView*">
+  The source view for the module currently being compiled. Used to resolve imports and look up declarations.
+</ResponseField>
+
+<ResponseField name="this_t" type="Type">
+  The type of `this` when the generator is compiling a method body. Undefined outside of a class context.
+</ResponseField>
+
+<ResponseField name="return_t" type="Type">
+  The expected return type of the function currently being compiled. Used for type-checking return statements.
+</ResponseField>
+
+<ResponseField name="in_class" type="bool">
+  `true` when the generator is compiling code inside a class or struct body.
+</ResponseField>
+
+<ResponseField name="module" type="ModuleBase*">
+  The module currently being compiled.
+</ResponseField>
+
+<ResponseField name="block_hash" type="std::string">
+  A string that uniquely identifies the current lexical scope. Used to generate mangled names for block-local types.
+</ResponseField>
+
+<ResponseField name="has_error" type="bool">
+  Set to `true` if any error was emitted via `error()`. Backends should propagate this to the caller.
+</ResponseField>
+
+## Shared methods
+
+### `error(const Error& err)`
+
+```cpp
+void error(const Error& err);
+```
+
+Records a compilation error and sets `has_error`. Both backends call this through their shared error-reporting path.
+
+<ParamField path="err" type="const Error&" required>
+  The error descriptor, including message and source location.
+</ParamField>
+
+### `isShadowing(const std::string& name)`
+
+```cpp
+bool isShadowing(const std::string& name) const;
+```
+
+Returns `true` if `name` is already declared in an enclosing scope, meaning a new declaration with the same name would shadow it.
+
+### `saturateSignature(FunctionSignature& sig, ModuleBase* md)`
+
+```cpp
+void saturateSignature(FunctionSignature& sig, ModuleBase* md);
+```
+
+Resolves all type names in `sig` against module `md`, filling in `module` pointers and expanding aliases. Must be called before the signature is used for code generation.
+
+### `annotateClass(ClassDeclaration*)`
+
+```cpp
+void annotateClass(ClassDeclaration*);
+```
+
+First-pass analysis of a class: records member names and types without generating code. Called before `checkClass`.
+
+### `checkClass(ClassDeclaration*)`
+
+```cpp
+void checkClass(ClassDeclaration*);
+```
+
+Validates class invariants (duplicate members, interface implementation correctness, etc.) after annotation.
+
+### `GetParentFunction(ASTNode* node)` — static
+
+```cpp
+static FunctionDeclaration* GetParentFunction(ASTNode* node);
+```
+
+Walks up the AST parent chain from `node` and returns the nearest enclosing `FunctionDeclaration`, or `nullptr` if none exists.
+
+### `mangleGenericArgs(const T& list)` — static
+
+```cpp
+template<std::ranges::forward_range T>
+static std::string mangleGenericArgs(const T& list)
+    requires std::same_as<std::remove_cvref_t<decltype(*list.begin())>, Type>;
+```
+
+Produces the canonical mangled suffix for a list of concrete type arguments, e.g. `::<i32,str>`. Returns an empty string if `list` is empty.
+
+### `inferReturnType(Statement* stat)`
+
+```cpp
+std::optional<Type> inferReturnType(Statement* stat);
+```
+
+Attempts to infer the return type of a statement (useful for functions with an omitted return type annotation). Returns `std::nullopt` if the type cannot be determined statically.
+
+### Generic instantiation helpers
+
+```cpp
+void generateGenericFunction(ModuleBase* mod, const std::string& hash,
+                             GenericFunctionDeclaration* fn, std::span<Type> types);
+
+void generateGenericClass(ModuleBase* mod, const std::string& hash,
+                          GenericClassDeclaration* decl, std::span<Type> types);
+
+void generateGenericAlias(ModuleBase* mod, const std::string& block,
+                          GenericAliasDeclaration* decl, std::span<Type> types);
+
+void generateGenericInterface(ModuleBase* md, const std::string& block,
+                              GenericInterfaceDeclaration* decl, std::span<Type> types);
+```
+
+Instantiate a generic declaration for a specific set of concrete type arguments. Called by the backends when a generic is first used.
+
+## Pure virtual interface
+
+Backends (LLVM, YVM) must implement these four methods:
+
+| Method | Purpose |
+|---|---|
+| `getVariableType(name, expr)` | Resolve the type of a named variable in the current scope |
+| `doFunction(decl)` | Generate code for a function declaration |
+| `doClass(decl)` | Generate code for a class/struct declaration |
+| `doAlias(decl)` | Generate code for a type alias declaration |
+| `doConst(decl)` | Generate code for a constant declaration |
+
+## ExpressionTypeChecker
+
+`ExpressionTypeChecker` is a visitor that resolves the type of any `Expression` node. It is instantiated by `IRGenerator` implementations during type checking.
+
+```cpp
+class ExpressionTypeChecker {
+public:
+    explicit ExpressionTypeChecker(IRGenerator* gen,
+                                   std::optional<Type> target = std::nullopt);
+    // ...
+};
+```
+
+<ParamField path="gen" type="IRGenerator*" required>
+  The generator whose scope and module context should be used for name resolution.
+</ParamField>
+
+<ParamField path="target" type="std::optional<Type>">
+  An optional expected type that can guide type inference for ambiguous expressions (e.g. integer literals).
+</ParamField>
+
+### `Result` type
+
+`ExpressionTypeChecker::Result` is a discriminated union over `FunctionType` (success) and `Error` (failure):
+
+```cpp
+struct Result : std::variant<FunctionType, Error> {
+    operator bool() const;            // true if holds FunctionType
+    FunctionType* operator->();
+    FunctionType& operator*();
+    std::optional<FunctionType> to_optional();
+    FunctionType value_or_error() const;
+    const Error& error() const;
+};
+```
+
+<Note>
+`FunctionType` is a subclass of `Type`. All expression results (including non-callable values) are represented as `FunctionType` because name expressions and binary expressions can resolve to callable objects.
+</Note>
+
+The checker is callable as a visitor over all expression subtypes:
+
+```cpp
+ExpressionTypeChecker checker(irgen);
+auto result = checker(my_expression_ptr);
+if (result) {
+    Type t = *result;
+    // use t
+}
+```
+
+## See also
+
+- [Parser](/api/parser) — produces the AST consumed by IRGenerator
+- [Type system](/api/type-system) — `Type` struct used throughout IRGenerator

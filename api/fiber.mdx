@@ -1,0 +1,135 @@
+---
+title: Fiber
+description: RAII handle representing a single Yoyo coroutine job.
+---
+
+`Yoyo::Fiber` is a non-copyable RAII wrapper around a single `mco_coro` coroutine registered with a `Runtime`. It provides typed access to the coroutine's input parameters and return value.
+
+<Warning>
+`Fiber` is non-copyable. Move it or use `forget()` to transfer ownership to the runtime.
+</Warning>
+
+## Struct definition
+
+```cpp
+#include <yoyo/runtime.h>
+
+namespace Yoyo {
+    struct YOYO_API Fiber {
+        void* parameters;
+        void* return_val;
+        mco_coro* coro;
+        Runtime* rt;
+
+        Fiber(void* param, void* ret_val, mco_coro* coro, Runtime* rt);
+        Fiber(const Fiber&) = delete;
+
+        template<typename T>
+        T get();
+
+        ~Fiber();
+        void forget();
+    };
+}
+```
+
+## Fields
+
+<ResponseField name="parameters" type="void*">
+  Pointer to the coroutine's input parameter buffer. Write your function arguments here (with the appropriate type cast) before calling `engine.execute()`.
+</ResponseField>
+
+<ResponseField name="return_val" type="void*">
+  Pointer to the coroutine's return value buffer. Readable after the coroutine finishes. Prefer `get<T>()` for type-safe access.
+</ResponseField>
+
+<ResponseField name="coro" type="mco_coro*">
+  The underlying minicoro coroutine handle. Set to `nullptr` after `forget()` is called.
+</ResponseField>
+
+<ResponseField name="rt" type="Runtime*">
+  The runtime this fiber is registered with.
+</ResponseField>
+
+## Constructor
+
+```cpp
+Fiber(void* param, void* ret_val, mco_coro* coro, Runtime* rt);
+```
+
+Fibers are normally created by `Engine::createFiber` rather than constructed directly.
+
+<ParamField path="param" type="void*" required>
+  Pointer to the parameter storage region for this coroutine.
+</ParamField>
+
+<ParamField path="ret_val" type="void*" required>
+  Pointer to the return value storage region for this coroutine.
+</ParamField>
+
+<ParamField path="coro" type="mco_coro*" required>
+  The coroutine handle returned by `mco_create`.
+</ParamField>
+
+<ParamField path="rt" type="Runtime*" required>
+  The runtime that owns the scheduler loop.
+</ParamField>
+
+## Methods
+
+### `get<T>()`
+
+```cpp
+template<typename T>
+T get();
+```
+
+Moves the return value out of `return_val` as type `T`, then calls `forget()` to detach the fiber from the runtime. Use this after `engine.execute()` to retrieve the result.
+
+<Warning>
+Calling `get<T>()` with the wrong type is undefined behavior. Ensure `T` matches the Yoyo function's declared return type.
+</Warning>
+
+### `forget()`
+
+```cpp
+void forget();
+```
+
+Detaches the fiber from RAII management: calls `rt->release_job(coro)` and sets `coro = nullptr`. After this call the runtime owns the coroutine's lifetime and the destructor is a no-op.
+
+Call `forget()` when you want the coroutine to outlive the `Fiber` handle, or after moving the result out manually.
+
+### Destructor
+
+```cpp
+~Fiber();
+```
+
+If `coro` is not `nullptr`, calls `rt->release_job(coro)`. This releases the coroutine from the runtime, potentially freeing it if the runtime owns it.
+
+## Example
+
+The following pattern is taken directly from the integration tests. It writes an `i32` argument into `parameters`, runs the engine, and repeats for several values:
+
+```cpp
+// From tests/ir_gen_test.cpp
+for (auto i : std::views::iota(0, 10)) {
+    auto fib = createFiberFor(mod, "source::main");
+    *(int32_t*)fib.parameters = i;  // write the argument
+    engine.execute();               // run the scheduler
+}
+```
+
+To read a return value after execution:
+
+```cpp
+auto fib = createFiberFor(mod, "source::main");
+engine.execute();
+int32_t result = fib.get<int32_t>();  // moves the value out
+// fib.coro is now nullptr
+```
+
+## See also
+
+- [Runtime](/api/runtime) — the scheduler that owns fibers

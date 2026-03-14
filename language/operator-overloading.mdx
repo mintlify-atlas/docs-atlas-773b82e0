@@ -1,0 +1,181 @@
+---
+title: Operator Overloading
+description: Defining custom operator behavior for user-defined types in Yoyo.
+---
+
+Yoyo allows any module-level declaration to define how built-in operators behave for custom types. Overloads are declared with the `operator:` keyword.
+
+## Declaration Syntax
+
+```yoyo
+operator: <op>[generic-clause](<params>) -> <return-type> = <body>
+```
+
+The operator token comes immediately after `operator:`, followed by an optional generic clause and the function signature.
+
+---
+
+## Arithmetic Operators
+
+Any binary arithmetic operator (`+`, `-`, `*`, `/`) can be overloaded. The following declares a generic dot-product for `Vec2`:
+
+```yoyo
+// Dot product — operator * on Vec2::<T>
+operator: *::<T>(a: Vec2::<T>, b: Vec2::<T>) -> T = {
+    return a.x * b.x + a.y * b.y;
+}
+
+Vec2: struct::<T> = {
+    x: T, y: T,
+    new: fn(x: T, y: T) -> Vec2::<T> = return Vec2::<T>{ .x, .y };
+    to_str: fn(&this) -> str = return "{ ${this.x}, ${this.y} }";
+}
+```
+
+With this overload `veci1 * veci2` calls the custom implementation for any monomorphisation of `T`:
+
+```yoyo
+main: fn = {
+    veci1 := Vec2::<i32>::new(10, 20);
+    veci2 := Vec2::new(20, 30);
+    vecf1 := Vec2::<f32>::new(30.0, 10.0);
+    vecf2 := Vec2::new(100.0, 20.0);
+
+    "${veci2 * veci1}".test::print();   // 800
+    "${vecf1 * vecf2}".test::print();   // 3200.0
+}
+```
+
+---
+
+## Subscript Operator `[]`
+
+The subscript operator lets a type respond to `obj[index]` syntax.
+
+### Immutable Subscript
+
+```yoyo
+ColorType: enum = { Red, Green, Blue }
+ColorValue: struct = {
+    red_val: i32,
+    green_val: i32,
+    blue_val: i32
+}
+
+// Read-only index: returns a reference
+operator: [](obj: &ColorValue, arg: ColorType) -> &i32 = return &obj.red_val;
+```
+
+Usage:
+
+```yoyo
+main: fn(inp: i32) = {
+    a: mut = ColorValue{ .red_val = inp, .green_val = 100, .blue_val = 50 };
+    test::assert(a[ColorType::Red] == inp, &"a[inp] == inp");
+}
+```
+
+### Mutable Subscript
+
+Prefix the operator with `mut` to declare an assignment-capable subscript. The first parameter must be `&mut`.
+
+```yoyo
+Indexer: struct = { val: u32 }
+
+// Mutable index: writes through the reference
+operator: mut [](obj: &mut u32, arg: Indexer) = *obj = arg.val;
+
+// Immutable counterpart is still required separately
+operator: [](obj: &u32, arg: Indexer) = return;
+```
+
+Usage:
+
+```yoyo
+main: fn(val: u32) = {
+    b: mut u32 = 100;
+    b[Indexer{.val}];                          // calls mut []
+    test::assert(b == val, &"b == val");
+}
+```
+
+<Note>
+When both mutable and immutable subscript overloads exist, Yoyo selects the mutable one when the receiver is `&mut` and the expression appears in an assignment context.
+</Note>
+
+---
+
+## Borrow Operator `&`
+
+The borrow operator `&` can be overloaded to make a wrapper type transparent to method dispatch. When `&Wrapper::<T>` is overloaded to return `&T`, methods on `T` become callable directly on a `Wrapper::<T>` value.
+
+```yoyo
+Wrapper: struct::<T> = {
+    data: T
+}
+
+// Overload & so that &Wrapper::<T> yields &T
+operator: &::<T>(input: &Wrapper::<T>) -> &T = {
+    return &input.data;
+}
+```
+
+With this overload, calling methods of the inner `T` through a `Wrapper` value works automatically:
+
+```yoyo
+Struct: struct = {
+    func: fn(&this) = return;
+}
+Struct2: struct = {
+    func2: fn(&this) = return;
+}
+
+main: fn = {
+    a := Wrapper{ .data = Struct{} };
+    a.func();       // resolves via the & overload
+
+    b := Wrapper{ .data = Struct2{} };
+    b.func2();      // also resolved correctly
+}
+```
+
+---
+
+## Generic Operator Overloads
+
+Append a generic clause `::< >` directly after the operator token to parameterise the overload:
+
+```yoyo
+operator: *::<T>(a: Vec2::<T>, b: Vec2::<T>) -> T = { ... }
+operator: &::<T>(input: &Wrapper::<T>) -> &T = { ... }
+```
+
+Type parameters can carry constraints using the standard `T: impl Interface` syntax.
+
+---
+
+## Supported Operators
+
+<AccordionGroup>
+  <Accordion title="Arithmetic">
+    `+` &nbsp; `-` &nbsp; `*` &nbsp; `/`
+
+    All take two operands. The first parameter is conventionally the left-hand side.
+  </Accordion>
+  <Accordion title="Subscript">
+    `[]` — immutable read  
+    `mut []` — mutable write (first param must be `&mut`)
+  </Accordion>
+  <Accordion title="Borrow">
+    `&` — makes a wrapper type transparent; first parameter must be a reference to the wrapper.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Dispatch Rules
+
+- Overloads are resolved at compile time by matching parameter types exactly.
+- Generic overloads are monomorphised on demand.
+- If no overload matches, the compiler emits a type error.
+- The `mut` qualifier on `[]` is checked based on whether the left-hand side is a mutable lvalue in an assignment position.

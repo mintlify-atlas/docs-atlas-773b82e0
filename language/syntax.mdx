@@ -1,0 +1,405 @@
+---
+title: Syntax
+description: Core syntax rules for Yoyo — declarations, expressions, operators, string interpolation, and control flow.
+---
+
+Yoyo's syntax is inspired by [cppfront/cpp2](https://github.com/hsutter/cppfront). The central idea is a uniform declaration form and expression rules that closely follow C++ precedence.
+
+## Declarations
+
+Every declaration in Yoyo uses the same form:
+
+```yoyo
+name: kind = value;
+```
+
+The `kind` describes what is being declared — a type annotation, the keyword `fn`, `struct`, `class`, `enum`, `union`, `interface`, `alias`, or `const`. The `value` is the initializer or body.
+
+<AccordionGroup>
+  <Accordion title="Variable declarations">
+
+Variables come in two flavors: mutable (`mut`) and immutable.
+
+```yoyo
+// Mutable, explicit type
+x: mut i32 = 5;
+
+// Mutable, inferred type
+x: mut = 42;
+
+// Immutable, inferred type (shorthand)
+x := 42;
+
+// Immutable, explicit type
+b: i32 = 10;
+```
+
+The `:=` shorthand is sugar for an immutable inferred variable. Once bound, an immutable variable cannot be reassigned.
+
+  </Accordion>
+  <Accordion title="Function declarations">
+
+Functions are declared with the `fn` keyword as the kind:
+
+```yoyo
+add: fn(a: i32, b: i32) -> i32 = return a + b;
+```
+
+When a function body contains more than one statement, wrap it in braces:
+
+```yoyo
+greet: fn(name: str) -> str = {
+    prefix := "Hello, ";
+    return prefix + name;
+}
+```
+
+See [Functions](/language/functions) for the full reference.
+
+  </Accordion>
+  <Accordion title="Type declarations (struct / class / enum / union)">
+
+```yoyo
+Vector2: struct = {
+    x: i32,
+    y: i32
+}
+
+Player: enum = { X, O, None }
+
+Color: union = {
+    RGB: struct = { r: u8, g: u8, b: u8, a: u8 }
+    Hex: u32,
+}
+```
+
+See [Classes and Structs](/language/classes-and-structs) for the full reference.
+
+  </Accordion>
+  <Accordion title="Alias declarations">
+
+```yoyo
+Index: alias = u64;
+Matrix4: alias = [f32; 16];
+```
+
+  </Accordion>
+  <Accordion title="Constant declarations">
+
+```yoyo
+constant: const i32 = 10;
+```
+
+Constants are evaluated at compile time.
+
+  </Accordion>
+</AccordionGroup>
+
+## Implicit single-statement function bodies
+
+If a function body is a single statement, the braces can be omitted:
+
+```yoyo
+// These are equivalent
+double: fn(x: i32) -> i32 = return x * 2;
+
+double: fn(x: i32) -> i32 = {
+    return x * 2;
+}
+```
+
+This also applies to methods and operator overloads.
+
+## Expressions
+
+Expression syntax and precedence follow C++ rules. Yoyo adds a few constructs on top.
+
+### Arithmetic and comparison
+
+```yoyo
+a + b
+a - b
+a * b
+a / b
+a % b
+a == b
+a != b
+a < b
+a > b
+a <= b
+a >= b
+```
+
+### Logical operators
+
+```yoyo
+a && b   // logical and
+a || b   // logical or
+!a       // logical not
+```
+
+### Bitwise operators
+
+```yoyo
+a & b    // bitwise and
+a | b    // bitwise or
+a ^ b    // bitwise xor
+~a       // bitwise not
+a << b   // left shift
+a >> b   // right shift
+```
+
+### Assignment operators
+
+```yoyo
+x = value
+x += value
+x -= value
+x *= value
+x /= value
+x %= value
+```
+
+### Reference operators
+
+```yoyo
+&expr        // immutable borrow
+&mut expr    // mutable borrow
+*expr        // dereference
+```
+
+### Type cast
+
+```yoyo
+value as i64
+```
+
+Casts are explicit and apply only to primitive numeric types.
+
+### Subscript
+
+```yoyo
+arr[index]
+```
+
+Subscript can be overloaded via `operator: []`.
+
+### Scope resolution
+
+```yoyo
+Player::X
+Color::RGB(...)
+Module::function()
+```
+
+### `if` expressions
+
+`if` is an expression and produces a value:
+
+```yoyo
+result: mut = if (cond) {
+    10
+} else {
+    20
+};
+```
+
+The last expression in each branch (without a semicolon) is the branch's value. Both branches must produce the same type unless one transfers control (e.g., `return` or `break`).
+
+### Block expressions
+
+A block `{ ... expr }` is an expression whose value is the final expression:
+
+```yoyo
+val := {
+    x := compute();
+    x * 2
+};
+```
+
+### `try` propagation
+
+Append `.try` to a result expression to unwrap the success value or early-return the error:
+
+```yoyo
+obj := if (true) {
+    result.try
+} else {
+    fallback_value
+};
+```
+
+### `gcnew` — garbage-collected allocation
+
+```yoyo
+a: ^i32 = gcnew b;
+node: ^Node::<T> = gcnew Node::<T>{ .data = value, .next = null };
+```
+
+See [Types](/language/types) for the `^T` type.
+
+### `spawn`
+
+```yoyo
+handle := spawn some_function(arg);
+```
+
+Spawns a concurrent fiber.
+
+## Conditional extraction (`if |binding|`)
+
+The `if |binding| (expr)` form extracts the inner value of an optional or result:
+
+```yoyo
+// Optional extraction
+if |val| (maybe_value) {
+    // val is the unwrapped value
+} else {
+    // value was null
+}
+
+// With mutable binding
+if |&mut num_ref| (shape as Circle) {
+    *num_ref = 200;
+}
+
+// Nested
+if |nxt| (this.first) {
+    last: mut = nxt;
+    if |next_node| (last.next) { /* ... */ }
+}
+```
+
+This is also used to destructure union variants:
+
+```yoyo
+if |rgb| ((*this) as RGB) {
+    return "rgb: ${rgb.r}, ${rgb.g}, ${rgb.b}, ${rgb.a}";
+} else if |hex| ((*this) as Hex) {
+    return "hex: ${hex}";
+}
+```
+
+## Control flow statements
+
+### `while`
+
+```yoyo
+while (condition) {
+    // ...
+}
+```
+
+### `for` — range-based iteration
+
+```yoyo
+for (elem in collection) {
+    // elem is the loop variable
+}
+
+// Tuple destructuring in for
+for (lol in iter) {
+    app::func(&"${lol.0}: ${*lol.1}");
+}
+```
+
+### `break` and `continue`
+
+```yoyo
+while (true) {
+    if (done) break;
+    if (skip) continue;
+}
+```
+
+### `return`
+
+```yoyo
+return value;
+return;          // void return
+```
+
+## String interpolation
+
+Strings are delimited by double quotes. Embed any expression inside `${...}`:
+
+```yoyo
+greeting := "Hello, ${name}!";
+coords   := "x=${vec.x}, y=${vec.y}";
+math     := "result = ${a + b * c}";
+```
+
+To borrow a string (pass it as `&str`), prefix the string literal with `&`:
+
+```yoyo
+test::print(&"before panic");
+test::print(&"${b}");
+```
+
+<Note>
+`&"..."` creates an immutable reference to a stack-allocated string. This is the standard way to pass string literals to functions that take `&str`.
+</Note>
+
+From the test suite:
+
+```yoyo
+row1 := " ${player_text(&this.data, 0)} │ ${player_text(&this.data, 1)} │ ${player_text(&this.data, 2)} ";
+"${veci2 * veci1}".test::print();
+"{ ${this.x}, ${this.y} }".test::print();
+```
+
+## Comments
+
+```yoyo
+// This is a line comment
+
+/* This is a
+   block comment */
+```
+
+## Semicolons
+
+Semicolons are required after statements. The exception is closing braces of blocks — no semicolon is needed after `}` when the block is the body of a declaration.
+
+```yoyo
+x: mut i32 = 5;       // required
+return x + 1;         // required
+
+foo: fn(x: i32) = {   // no semicolon needed after }
+    return x;
+}
+```
+
+## `using` — scope imports
+
+Bring declarations from another scope into the current scope:
+
+```yoyo
+using Module1::Type;                   // single entity
+using Module2::{ TypeWrapper::{ Type, Type2 } }; // nested
+using Module3::*;                      // everything
+using test::print;                     // from module
+```
+
+## Object literal syntax
+
+Structs are initialized with named field syntax:
+
+```yoyo
+a: mut = ColorValue{
+    .red_val = inp,
+    .green_val = 100,
+    .blue_val = 50
+};
+
+// Shorthand when variable name matches field name
+vec := Vec2::<i32>{ .x, .y };
+```
+
+## Module import
+
+```yoyo
+app: module = APP
+```
+
+Imports a module by name for use with `module::symbol` qualified access.

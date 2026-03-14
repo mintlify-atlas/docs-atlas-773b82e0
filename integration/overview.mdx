@@ -1,0 +1,81 @@
+---
+title: "C++ integration overview"
+description: "Understand the architecture for embedding Yoyo in a C++20 application."
+---
+
+Yoyo is designed to live inside your C++ application as a first-class scripting engine. Your code creates an engine, registers native functions and types, loads Yoyo source, compiles it at runtime, and drives execution through a lightweight fiber scheduler — all through a single, consistent API.
+
+## Architecture
+
+The embedding stack has four layers:
+
+<CardGroup cols={2}>
+  <Card title="Engine" icon="gear">
+    The top-level object (`YVMEngine` or `LLVMEngine`). Owns all modules, the JIT compiler, and the fiber scheduler. You interact with the engine to compile code, find functions, and run fibers.
+  </Card>
+  <Card title="Modules" icon="puzzle-piece">
+    Two kinds of module exist side by side. **AppModules** are created by your C++ code and expose native functions and types to scripts. **Script modules** are loaded from Yoyo source and compiled by the engine.
+  </Card>
+  <Card title="Fibers" icon="arrows-spin">
+    Every Yoyo function call is wrapped in a `Fiber` — a lightweight coroutine backed by the [minicoro](https://github.com/edubart/minicoro) library. Fibers are created from C++ and run cooperatively through the scheduler.
+  </Card>
+  <Card title="Runtime" icon="server">
+    The `Runtime` struct is a round-robin cooperative scheduler. `engine.execute()` drives it until all fibers complete. Multiple fibers can be in flight simultaneously.
+  </Card>
+</CardGroup>
+
+## Data flow
+
+A typical integration follows this sequence:
+
+```
+addAppModule()          ← register C++ functions and types
+  └─ addFunction()
+addModule()             ← load Yoyo source code
+compile()               ← parse + type-check + IR generation
+prepareForExecution()   ← JIT-compile to native code
+findFunction()          ← look up a compiled Yoyo function
+createFiber()           ← wrap it in a coroutine
+  └─ fib.parameters     ← write input arguments
+execute()               ← run the scheduler until done
+  └─ fib.get<T>()       ← read the return value
+```
+
+## Two backends
+
+Yoyo ships two interchangeable backend implementations. The public API surface is intentionally similar between them.
+
+<CardGroup cols={2}>
+  <Card title="YVM backend" icon="microchip">
+    A custom bytecode virtual machine. Lighter dependencies (libffi and the `yoyo-vm` subproject). Faster cold-start and build times. Good choice for most embedding use cases.
+  </Card>
+  <Card title="LLVM backend" icon="bolt">
+    Uses LLVM ORC JIT to produce fully optimized native code. Heavier dependencies. Best for long-running scripts where peak throughput matters.
+  </Card>
+</CardGroup>
+
+Select the backend with the Meson `executor` option: `yvm`, `llvm`, or `both`.
+
+## Host vs. script boundary
+
+- **Host (C++) side** — your application provides function implementations and type definitions via `AppModule`. These appear as a named module inside every Yoyo script.
+- **Script side** — Yoyo source code calls host functions by their registered module and name (e.g., `app::print()`), and the compiler enforces the declared signature at compile time.
+
+The boundary is strict: Yoyo cannot reach into arbitrary C++ memory. Everything the script can access must be explicitly registered by the host.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Embedding guide" icon="code" href="/integration/embedding">
+    Step-by-step walkthrough for adding Yoyo to a C++ project.
+  </Card>
+  <Card title="App modules" icon="plug" href="/integration/app-modules">
+    Register C++ functions, enums, and classes for use in Yoyo scripts.
+  </Card>
+  <Card title="Calling functions" icon="arrow-right" href="/integration/calling-functions">
+    Find compiled Yoyo functions and call them from C++.
+  </Card>
+  <Card title="Backends" icon="sliders" href="/integration/backends">
+    Compare the YVM and LLVM backends and configure your build.
+  </Card>
+</CardGroup>

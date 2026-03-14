@@ -1,0 +1,188 @@
+---
+title: "Unions"
+description: "Tagged union (sum type) declarations, variant constructors, and conditional extraction pattern matching in Yoyo."
+---
+
+A **union** is a tagged sum type: a value that holds exactly one of several named variants at a time. Yoyo unions are always safe — the active variant is tracked at runtime via a hidden discriminant tag.
+
+## Declaration syntax
+
+```yoyo
+TypeName: union = {
+    VariantA: TypeA,
+    VariantB: TypeB,
+}
+```
+
+Each line inside the body is either a **variant** (`Name: Type`) or a **sub-declaration** (a nested `struct`, method function, etc.).
+
+### Minimal example
+
+```yoyo
+Shape: union = {
+    Circle: i32,       // radius
+    Rectangle: Vector2 // width & height
+}
+```
+
+## Variant types
+
+Any Yoyo type can be a variant payload — primitives, structs, tuples, other unions, or `void` for marker variants.
+
+<Tabs>
+  <Tab title="Primitive payload">
+```yoyo
+Number: union = {
+    Int:   i64,
+    Float: f64,
+}
+```
+  </Tab>
+  <Tab title="Struct payload">
+```yoyo
+Color: union = {
+    ColorRGB: struct = { r: u8, g: u8, b: u8, a: u8 }
+    RGB: ColorRGB,
+    Hex: u32,
+}
+```
+
+Sub-structs declared inside the union body are scoped to the union: `Color::ColorRGB`.
+  </Tab>
+  <Tab title="Void / marker variant">
+```yoyo
+Message: union = {
+    Quit:  void,
+    Start,      // implicit void — comma or newline separates variants
+    Write: str,
+}
+```
+  </Tab>
+</Tabs>
+
+## Constructing a value
+
+Use the `::` scope operator with the variant name as a constructor call:
+
+```yoyo
+c1 := Color::RGB(Color::ColorRGB{ .r = 10, .g = 20, .b = 22, .a = 40 });
+c2 := Color::Hex(12456);
+```
+
+For `void` variants, no argument is passed:
+
+```yoyo
+msg := Message::Quit;
+```
+
+## Pattern matching — conditional extraction
+
+Yoyo uses **conditional extraction** to test which variant is active and bind its payload:
+
+```yoyo
+if |binding| (expr as Variant) {
+    // binding has type Variant's payload type
+} else if |other| (expr as OtherVariant) {
+    // ...
+} else {
+    // no variant matched
+}
+```
+
+<Note>
+`expr as Variant` evaluates to an `optional` of the payload type. The `if |binding|` syntax unwraps it — only entering the branch when the variant is active.
+</Note>
+
+### Full example from the test suite
+
+```yoyo
+Color: union = {
+    ColorRGB: struct = { r: u8, g: u8, b: u8, a: u8 }
+    RGB: ColorRGB,
+    Hex: u32,
+
+    to_str: fn(&this) -> str = {
+        if |rgb| ((*this) as RGB)
+            return "rgb: ${rgb.r}, ${rgb.g}, ${rgb.b}, ${rgb.a}";
+        else if |hex| ((*this) as Hex)
+            return "hex: ${hex}";
+        else
+            return "Undefined";
+    }
+}
+
+main: fn = {
+    c1 := Color::RGB(Color::ColorRGB{ .r = 10, .g = 20, .b = 22, .a = 40 });
+    c2 := Color::Hex(12456);
+    c1.to_str(); // "rgb: 10, 20, 22, 40"
+    c2.to_str(); // "hex: 12456"
+}
+```
+
+### Mutable extraction
+
+Prefixing the binding with `&mut` gives a mutable reference to the payload, allowing in-place modification:
+
+```yoyo
+Shape: union = {
+    Circle: i32,
+    Rectangle: Vector2
+}
+
+main: fn = {
+    val: mut = Shape::Circle(300);
+    val_ptr: &mut Shape = &mut val;
+    if |&mut num_ref| (val as Circle) {
+        // num_ref is &mut i32 — reassignment through the pointer
+        *val_ptr = Shape::Rectangle(Vector2{ .x = 20, .y = 40 });
+        *num_ref = 200;
+    };
+}
+```
+
+<Warning>
+Mutating the union through `val_ptr` while holding a `&mut` reference to its interior (as above) is a deliberate unsafe pattern. The borrow checker allows it here because the mutation goes through a raw pointer; take care not to use `num_ref` after the outer union has been overwritten.
+</Warning>
+
+## Methods on unions
+
+Declare functions inside the union body exactly as you would inside a struct. Use `&this` for immutable self and `&mut this` for mutable self:
+
+```yoyo
+Number: union = {
+    Int:   i64,
+    Float: f64,
+
+    is_zero: fn(&this) -> bool = {
+        if |n| ((*this) as Int)   return n == 0;
+        if |f| ((*this) as Float) return f == 0.0;
+        return false;
+    }
+}
+```
+
+## Sub-declarations inside a union
+
+You can nest full struct declarations inside a union body. They become part of the union's namespace:
+
+```yoyo
+Color: union = {
+    ColorRGB: struct = { r: u8, g: u8, b: u8, a: u8 }  // Color::ColorRGB
+    RGB: ColorRGB,
+    Hex: u32,
+}
+
+main: fn = {
+    rgb_val := Color::ColorRGB{ .r = 255, .g = 0, .b = 0, .a = 255 };
+    c := Color::RGB(rgb_val);
+}
+```
+
+<AccordionGroup>
+  <Accordion title="When to use a union vs. an enum">
+    Use a **union** when each variant carries data (a payload type). Use an **enum** when you only need named integer constants with no associated data. A `void`-only union technically works as an enum but `enum` is more expressive for that use case.
+  </Accordion>
+  <Accordion title="No exhaustiveness checking yet">
+    The current compiler does not emit a compile error if a conditional extraction chain fails to cover all variants. The `else` branch acts as the catch-all. Exhaustiveness analysis is planned for a future release.
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,161 @@
+---
+title: "Building from source"
+description: "Build Yoyo with Meson, choose between the LLVM and YVM execution backends, and configure optional features."
+---
+
+## Dependencies
+
+Yoyo uses [Meson](https://mesonbuild.com/) as its build system with [Ninja](https://ninja-build.org/) as the default backend.
+
+| Dependency | Required | Purpose |
+|---|---|---|
+| C++20 compiler | Yes | GCC 12+, Clang 15+, or MSVC 19.30+ |
+| Meson | Yes | Build system (version 1.0+) |
+| Ninja | Yes | Build backend |
+| [BDW-GC](https://www.hboehm.info/gc/) (`bdw-gc`) | Yes | Garbage collector used by the runtime |
+| [libffi](https://sourceware.org/libffi/) | Yes (YVM only) | Foreign function interface for the YVM backend |
+| [LLVM](https://llvm.org/) | No | Required when `executor=llvm` or `executor=both` |
+| [Graphviz](https://graphviz.org/) (`libgvc`) | No | Optional: enables CFG visualisation in the test suite |
+
+<Note>
+  BDW-GC must be installed system-wide (or available to `pkg-config`) before running `meson setup`. On Debian/Ubuntu: `apt install libgc-dev`. On macOS with Homebrew: `brew install bdw-gc`.
+</Note>
+
+## Build options
+
+Yoyo exposes two options in `meson.options`:
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `executor` | combo | `yvm` | Execution backend: `llvm`, `yvm`, or `both` |
+| `llvm_static` | boolean | `true` | Link LLVM statically (only applies when `executor=llvm` or `both`) |
+
+## Configuring and building
+
+<Tabs>
+  <Tab title="YVM backend">
+
+The YVM backend uses a custom bytecode VM bundled as a Meson subproject (`yoyo-vm`). It requires libffi but does **not** require LLVM.
+
+```bash
+# Install dependencies (Debian/Ubuntu example)
+apt install libgc-dev libffi-dev
+
+# Configure
+meson setup build -Dexecutor=yvm
+
+# Build
+ninja -C build
+```
+
+Meson automatically fetches and builds the `yoyo-vm` subproject on first run.
+
+  </Tab>
+  <Tab title="LLVM backend">
+
+The LLVM backend requires an LLVM installation visible to `pkg-config` or via `llvm-config`.
+
+```bash
+# Install dependencies (Debian/Ubuntu example)
+apt install libgc-dev llvm-dev
+
+# Configure — link LLVM statically (default)
+meson setup build -Dexecutor=llvm -Dllvm_static=true
+
+# Configure — link LLVM dynamically
+meson setup build -Dexecutor=llvm -Dllvm_static=false
+
+# Build
+ninja -C build
+```
+
+<Warning>
+  Static LLVM linkage (`llvm_static=true`) produces a self-contained library but significantly increases link time and binary size. Use dynamic linkage during development and static linkage for distribution.
+</Warning>
+
+  </Tab>
+  <Tab title="Both backends">
+
+Building with `executor=both` compiles all source files for LLVM and YVM into a single library. This requires both LLVM and libffi.
+
+```bash
+apt install libgc-dev libffi-dev llvm-dev
+
+meson setup build -Dexecutor=both
+ninja -C build
+```
+
+  </Tab>
+</Tabs>
+
+## Shared library build
+
+By default, Meson builds a static library. To build a shared library (`.so` / `.dll`):
+
+```bash
+meson setup build --default-library=shared -Dexecutor=yvm
+ninja -C build
+```
+
+When `default_library=shared` is detected, Yoyo's `meson.build` automatically adds `-DYOYO_DLL` and `-DYOYO_SHARED` to the library's compile flags, and propagates `-DYOYO_SHARED` to any downstream target that links against `yoyo_dep`.
+
+<Note>
+  If you link against a shared build of Yoyo from outside of Meson (e.g. CMake or a raw compiler invocation), you must define `YOYO_SHARED` manually in your project's compile flags. Failing to do so will cause missing symbol errors at link time on Windows.
+</Note>
+
+## Running the test suite
+
+Yoyo's test suite uses [Catch2](https://github.com/catchorg/Catch2). Make sure `catch2-with-main` is available to `pkg-config`, then:
+
+```bash
+meson setup build -Dexecutor=yvm
+ninja -C build
+meson test -C build
+```
+
+For verbose output:
+
+```bash
+meson test -C build -v
+```
+
+The test binary (`ir_gen_test`) must be run from the `tests/` directory because it loads test fixture files by relative path. Meson handles this automatically via the `workdir` setting in `meson.build`.
+
+## Using Yoyo as a Meson subproject
+
+To embed Yoyo in your own Meson project:
+
+```bash
+mkdir -p subprojects
+# Place the yoyo-lang source tree at subprojects/yoyo-lang
+```
+
+```meson
+# your project's meson.build
+yoyo_proj = subproject('yoyo-lang', default_options: ['executor=yvm'])
+yoyo_dep  = yoyo_proj.get_variable('yoyo_dep')
+
+executable('my_app', 'main.cpp', dependencies: [yoyo_dep])
+```
+
+The `yoyo_dep` dependency object carries the correct include directories, link targets, and compile-time flags (including `YOYO_SHARED` for shared builds).
+
+<Tip>
+  Pin the executor option via `default_options` in the `subproject()` call so that your top-level project controls which backend is compiled, rather than relying on whatever the subproject defaults to.
+</Tip>
+
+## Compiler requirements
+
+Yoyo requires C++20 features including concepts, ranges, and `std::format`. The project sets `cpp_std=c++20` in `meson.build`:
+
+```meson
+project('yoyo-lang', 'cpp', default_options: ['cpp_std=c++20'])
+```
+
+Minimum tested compiler versions:
+
+| Compiler | Minimum version |
+|---|---|
+| GCC | 12 |
+| Clang | 15 |
+| MSVC | 19.30 (VS 2022) |

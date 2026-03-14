@@ -1,0 +1,329 @@
+---
+title: "YVMEngine"
+description: "Bytecode interpreter engine backed by the Yoyo VM. Suitable for all platforms and does not require LLVM."
+---
+
+`Yoyo::YVMEngine` compiles Yoyo source to YVM bytecode and executes it with the built-in stack-based virtual machine. It inherits from [`Engine`](/api/engine) and is the recommended backend when LLVM is unavailable or unnecessary.
+
+```cpp
+#include <yoyo/yvm/yvm_engine.h>
+```
+
+## Supporting types
+
+### `FunctionTy`
+
+Describes a compiled Yoyo function that can be invoked as a fiber.
+
+```cpp
+struct FunctionTy {
+    uint64_t*      code;         // Pointer into the bytecode stream
+    StructNativeTy* params;      // Native parameter layout descriptor
+    NativeTy*       ret;         // Native return type descriptor
+    bool            should_sret; // True when return value uses struct-return convention
+};
+```
+
+<ResponseField name="code" type="uint64_t*">
+  Pointer to the first bytecode instruction of the function.
+</ResponseField>
+
+<ResponseField name="ret" type="NativeTy*">
+  Descriptor for the return type's native representation.
+</ResponseField>
+
+<ResponseField name="should_sret" type="bool">
+  When `true`, the caller allocates storage for the return value and passes a pointer as the first argument (struct-return convention). This matches how `addFunction` counts parameters — see [`YVMAppModule`](/api/app-module#parameter-count-and-sret).
+</ResponseField>
+
+## Class definition
+
+```cpp
+namespace Yoyo {
+    class YOYO_API YVMEngine : public Engine {
+    public:
+        YVMEngine();
+        ~YVMEngine() override;
+
+        YVMAppModule* addAppModule(const std::string& name);
+        ModuleBase*   addModule(const std::string& module_name, std::string source);
+        bool          compile();
+        void          prepareForExecution();
+        void          addDynamicLibrary(std::string_view path);
+
+        Fiber                    createFiber(const FunctionTy& fn);
+        std::optional<FunctionTy> findFunction(
+            ModuleBase* mod, const std::string& function_name);
+
+        void* createGlobalConstant(
+            const Type& type,
+            const std::vector<Constant>& args,
+            IRGenerator*) override;
+        void* findNativeFunction(const std::string& name);
+        size_t getTypeSpawnIdx(const Type& tp);
+
+        Yvm::VM             vm;
+        StructTypeSelector  struct_manager;
+        UniqueFISelector    fi_manager;
+        UnionTypeSelector   union_manager;
+        ArrayTypeSelector   array_manager;
+        std::vector<NativeModule*> external_dlls;
+    };
+}
+```
+
+## Public fields
+
+<ResponseField name="vm" type="Yvm::VM">
+  The Yoyo virtual machine instance. Holds the register file, call stack, and instruction dispatch table.
+</ResponseField>
+
+<ResponseField name="struct_manager" type="StructTypeSelector">
+  Assigns stable numeric indices to struct types at compile time, used during bytecode emission.
+</ResponseField>
+
+<ResponseField name="fi_manager" type="UniqueFISelector">
+  Manages function-index assignments for indirect calls.
+</ResponseField>
+
+<ResponseField name="union_manager" type="UnionTypeSelector">
+  Assigns stable indices to union types.
+</ResponseField>
+
+<ResponseField name="array_manager" type="ArrayTypeSelector">
+  Assigns stable indices to array types.
+</ResponseField>
+
+<ResponseField name="external_dlls" type="std::vector&lt;NativeModule*&gt;">
+  List of loaded shared libraries contributed via `addDynamicLibrary`.
+</ResponseField>
+
+## Methods
+
+### `addAppModule`
+
+Creates and registers a native C++ app module.
+
+```cpp
+YVMAppModule* addAppModule(const std::string& name);
+```
+
+<ParamField path="name" type="std::string" required>
+  Unique module name. Yoyo source accesses its functions as `name::function_name`.
+</ParamField>
+
+**Returns** a non-owning pointer to the new `YVMAppModule`. The engine owns the module's lifetime.
+
+**Example:**
+
+```cpp
+Yoyo::YVMEngine engine;
+auto test = engine.addAppModule("test");
+test->addFunction("(x: &str) -> i32", print_fn, "print");
+test->addFunction("(x: bool, y: &str) -> void", assert_fn, "assert");
+```
+
+### `addModule`
+
+Registers a Yoyo source module for compilation.
+
+```cpp
+ModuleBase* addModule(const std::string& module_name, std::string source);
+```
+
+<ParamField path="module_name" type="std::string" required>
+  Name used to identify this module and referenced in `import` statements.
+</ParamField>
+
+<ParamField path="source" type="std::string" required>
+  Full Yoyo source text.
+</ParamField>
+
+**Returns** a non-owning pointer to the compiled `ModuleBase`. Use this pointer with `findFunction` and `createFiber`.
+
+**Example:**
+
+```cpp
+std::string source = R"(
+    main: fn(val: i32) = {
+        test::print(&"Hello from Yoyo!");
+    }
+)";
+auto mod = engine.addModule("source", source);
+```
+
+### `compile`
+
+Parses and compiles all registered source modules to YVM bytecode.
+
+```cpp
+bool compile();
+```
+
+**Returns** `true` on success, `false` if any compilation error occurred.
+
+```cpp
+if (!engine.compile()) {
+    std::cerr << "Compilation failed\n";
+    return 1;
+}
+```
+
+### `prepareForExecution`
+
+Finalises type layouts and links all modules so the VM can execute them.
+
+```cpp
+void prepareForExecution();
+```
+
+Call this after `compile` and before creating fibers.
+
+### `addDynamicLibrary`
+
+Loads a shared library and makes its exported symbols available to Yoyo code.
+
+```cpp
+void addDynamicLibrary(std::string_view path);
+```
+
+<ParamField path="path" type="std::string_view" required>
+  Filesystem path to the shared library (`.so` on Linux, `.dll` on Windows).
+</ParamField>
+
+### `findFunction`
+
+Looks up a compiled function by module and mangled name.
+
+```cpp
+std::optional<FunctionTy> findFunction(
+    ModuleBase* mod, const std::string& function_name);
+```
+
+<ParamField path="mod" type="ModuleBase*" required>
+  The module that contains the function. Use the pointer returned by `addModule`.
+</ParamField>
+
+<ParamField path="function_name" type="std::string" required>
+  The fully-qualified mangled name of the function. The name is formed as `module_hash + function_name`. Retrieve `module_hash` from `mod->module_hash`.
+</ParamField>
+
+**Returns** `std::optional<FunctionTy>` — present if the function was found, empty otherwise.
+
+**Example:**
+
+```cpp
+std::string full_name = mod->module_hash + "main";
+auto fn = engine.findFunction(mod, full_name);
+if (!fn) { std::cerr << "Function not found\n"; return 1; }
+```
+
+### `createFiber`
+
+Allocates and schedules a new fiber to execute the given function.
+
+```cpp
+Fiber createFiber(const FunctionTy& fn);
+```
+
+<ParamField path="fn" type="const FunctionTy&" required>
+  A function descriptor returned by `findFunction`.
+</ParamField>
+
+**Returns** a [`Fiber`](/api/fiber) RAII handle. Write input parameters to `fiber.parameters` before calling `execute`.
+
+**Example:**
+
+```cpp
+auto fiber = engine.createFiber(fn);
+// Pass an i32 argument
+*reinterpret_cast<int32_t*>(fiber.parameters) = 42;
+engine.execute();
+```
+
+### `findNativeFunction`
+
+Resolves a native (C++) symbol by name across all loaded libraries.
+
+```cpp
+void* findNativeFunction(const std::string& name);
+```
+
+<ParamField path="name" type="std::string" required>
+  The unmangled symbol name.
+</ParamField>
+
+**Returns** a `void*` function pointer, or `nullptr` if not found.
+
+### `getTypeSpawnIdx`
+
+Returns the stable numeric index assigned to a type, used internally during fiber creation for GC bookkeeping.
+
+```cpp
+size_t getTypeSpawnIdx(const Type& tp);
+```
+
+<ParamField path="tp" type="const Type&" required>
+  The Yoyo type to query.
+</ParamField>
+
+**Returns** the type's numeric index.
+
+### `createGlobalConstant`
+
+Internal method called by the compiler to materialise global constants in the bytecode.
+
+```cpp
+void* createGlobalConstant(
+    const Type& type,
+    const std::vector<Constant>& args,
+    IRGenerator*) override;
+```
+
+<Note>
+  This method is called by the compiler infrastructure, not by application code.
+</Note>
+
+## Typical usage
+
+```cpp
+#include <yoyo/yvm/yvm_engine.h>
+#include <yoyo/yvm/app_module.h>
+
+static int32_t my_print(void* str) {
+    std::cout << Yoyo::Engine::viewString(str) << '\n';
+    return 0;
+}
+
+int main() {
+    Yoyo::YVMEngine engine;
+
+    // Register native module
+    auto app = engine.addAppModule("host");
+    app->addFunction("(x: &str) -> i32", my_print, "print");
+
+    // Add Yoyo source
+    std::string source = R"(
+        main: fn = {
+            host::print(&"Hello, Yoyo!");
+        }
+    )";
+    auto mod = engine.addModule("app", source);
+
+    // Compile and run
+    if (!engine.compile()) return 1;
+    engine.prepareForExecution();
+
+    std::string entry = mod->module_hash + "main";
+    auto fn = engine.findFunction(mod, entry).value();
+    auto fiber = engine.createFiber(fn);
+    engine.execute();
+}
+```
+
+## See also
+
+- [`Engine`](/api/engine) — base class
+- [`YVMAppModule`](/api/app-module) — registering native functions
+- [`Fiber`](/api/fiber) — fiber handle and parameter passing
+- [`LLVMEngine`](/api/llvm-engine) — JIT-compiled alternative

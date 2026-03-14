@@ -1,0 +1,153 @@
+---
+title: "Calling Yoyo functions from C++"
+description: "Find compiled Yoyo functions, create fibers, pass parameters, and read return values."
+---
+
+After `compile()` and `prepareForExecution()` have run, any function in any loaded script module can be called from C++. The process has three steps: find the function, create a fiber, then execute it.
+
+## The `FunctionTy` struct
+
+`findFunction` returns a `FunctionTy` that describes the compiled function:
+
+```cpp
+struct FunctionTy {
+    uint64_t*     code;        // pointer into the JIT code region
+    StructNativeTy* params;    // native type descriptor for the parameter struct
+    NativeTy*     ret;         // native type descriptor for the return value
+    bool          should_sret; // true when return value is passed by pointer
+};
+```
+
+You pass this value directly to `createFiber`. You should not call `code` directly.
+
+## Finding a function
+
+```cpp
+std::optional<FunctionTy> findFunction(
+    ModuleBase*        mod,
+    const std::string& function_name
+);
+```
+
+Function names inside a module are prefixed by the module's **hash string**. The hash is a unique identifier assigned by the compiler and stored in `ModuleBase::module_hash`.
+
+```cpp
+std::string full_name = mod->module_hash + "func_2";
+auto fn_opt = engine.findFunction(mod, full_name);
+if (!fn_opt.has_value()) {
+    // function not found — check the name and module
+}
+auto fn = fn_opt.value();
+```
+
+<Tip>
+To find the top-level `main` function of a module loaded as `"source"`, use `mod->module_hash + "main"`. The module hash includes a trailing separator so simple concatenation is correct.
+</Tip>
+
+## Creating a fiber
+
+```cpp
+Fiber createFiber(const FunctionTy& fn);
+```
+
+A `Fiber` wraps the function call as a coroutine and registers it with the scheduler. The fiber is ready to receive parameters immediately after creation.
+
+```cpp
+auto fib = engine.createFiber(fn);
+```
+
+## Passing parameters
+
+`Fiber::parameters` is a raw `void*` pointing to the argument struct. Cast it to a pointer to the expected type and write the value:
+
+```cpp
+// Function takes a single i32
+*(int32_t*)fib.parameters = 42;
+```
+
+For functions with multiple parameters, the parameters are laid out sequentially in memory in declaration order. Cast to a struct that mirrors the Yoyo parameter list:
+
+```cpp
+// Yoyo: fn(a: i32, b: u64) -> void
+struct Params { int32_t a; uint64_t b; };
+auto* p = reinterpret_cast<Params*>(fib.parameters);
+p->a = 10;
+p->b = 200;
+```
+
+<Warning>
+Yoyo uses the platform's C ABI for struct layout. Match field types exactly: `i32` → `int32_t`, `u64` → `uint64_t`, `f32` → `float`, `f64` → `double`, `bool` → `bool`.
+</Warning>
+
+## Running the scheduler
+
+```cpp
+engine.execute();
+```
+
+This runs the cooperative scheduler until all queued fibers complete. You can create multiple fibers before a single `execute()` call — they all run concurrently:
+
+```cpp
+for (int i = 0; i < 10; ++i) {
+    auto fib = engine.createFiber(fn);
+    *(int32_t*)fib.parameters = i;
+    engine.execute();
+}
+```
+
+## Reading return values
+
+After execution, read the return value with the type-safe `get<T>()` method:
+
+```cpp
+struct Fiber {
+    void* parameters;
+    void* return_val;  // raw pointer to the return buffer
+    // ...
+    template<typename T>
+    T get();           // move-reads *return_val, then calls forget()
+};
+```
+
+```cpp
+auto fib = engine.createFiber(fn);
+engine.execute();
+int32_t result = fib.get<int32_t>();
+```
+
+`get<T>()` moves the value out of the return buffer and calls `forget()` internally, so do not call it more than once.
+
+## Fiber ownership and cleanup
+
+By default the `Fiber` destructor releases the coroutine back to the scheduler when it goes out of scope. If you want to detach the fiber and let the scheduler manage its lifetime independently, call:
+
+```cpp
+fib.forget();
+```
+
+After `forget()`, the `Fiber` object is inert — do not call `get<T>()` on it.
+
+## Complete example from the test suite
+
+```cpp
+// From tests/ir_gen_test.cpp
+
+Yoyo::Fiber createFiberFor(
+    Yoyo::ModuleBase*  mod,
+    const std::string& function_name)
+{
+    auto eng = dynamic_cast<Yoyo::YVMEngine*>(mod->engine);
+    return eng->createFiber(eng->findFunction(mod, function_name).value());
+}
+
+// Run a parameterised function 10 times
+for (auto i : std::views::iota(0, 10)) {
+    auto fib = createFiberFor(mod, "source::main");
+    *(int32_t*)fib.parameters = i;
+    engine.execute();
+}
+```
+
+<Note>
+The string `"source::main"` used in some tests is a shorthand pattern. In practice the function name stored in the module uses the hash prefix. Use `mod->module_hash + "main"` for reliability.
+</Note>

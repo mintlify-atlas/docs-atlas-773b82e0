@@ -1,80 +1,187 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Embed Yoyo in a C++ project and run your first script in under five minutes."
 ---
 
-## Get started in three steps
-
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This guide walks you through setting up a minimal C++ host application that embeds the Yoyo scripting engine, exposes a C++ function to Yoyo, and runs a Yoyo script.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  The YVM backend is the easiest starting point — it has lighter dependencies than the LLVM backend. This guide uses YVM.
 </Note>
+
+## Prerequisites
+
+| Requirement | Details |
+|---|---|
+| C++20 compiler | GCC 12+, Clang 15+, or MSVC 19.34+ |
+| [Meson](https://mesonbuild.com) | Version 1.0 or newer |
+| [Ninja](https://ninja-build.org) | Any recent version |
+| BDW-GC | Boehm garbage collector (`libgc-dev` on Debian/Ubuntu) |
+| libffi | Required by YVM (`libffi-dev` on Debian/Ubuntu) |
+
+<Tip>
+  On Ubuntu/Debian: `sudo apt install meson ninja-build libgc-dev libffi-dev`
+</Tip>
+
+## Steps
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/Git-i/yoyo-lang.git
+    cd yoyo-lang
+    git submodule update --init --recursive
+    ```
+  </Step>
+
+  <Step title="Build the library">
+    Build with the YVM backend (recommended for getting started):
+
+    <CodeGroup>
+    ```bash YVM (recommended)
+    meson setup builddir -Dexecutor=yvm
+    cd builddir && ninja
+    ```
+    ```bash LLVM backend
+    meson setup builddir -Dexecutor=llvm
+    cd builddir && ninja
+    ```
+    ```bash Both backends
+    meson setup builddir -Dexecutor=both
+    cd builddir && ninja
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Add Yoyo to your Meson project">
+    In your own project's `meson.build`, declare Yoyo as a subproject:
+
+    ```meson meson.build
+    project('my-app', 'cpp', default_options: ['cpp_std=c++20'])
+
+    yoyo_proj = subproject('yoyo-lang', default_options: ['executor=yvm'])
+    yoyo_dep  = yoyo_proj.get_variable('yoyo_dep')
+
+    executable('my-app', 'main.cpp', dependencies: [yoyo_dep])
+    ```
+
+    Then place the yoyo-lang source inside your `subprojects/` folder (or use `meson wrap`).
+  </Step>
+
+  <Step title="Write a Yoyo script">
+    Create `hello.yoyo` — all Yoyo declarations use the form `name: kind = value;`:
+
+    ```yoyo hello.yoyo
+    // All declarations: name: kind = value
+    main: fn = {
+        // Call the C++ function we'll register as "app::print"
+        app::print(&"Hello from Yoyo!");
+
+        // Variables: type inferred with :=
+        greeting := "The answer is ${42}";
+        app::print(&greeting);
+    }
+    ```
+  </Step>
+
+  <Step title="Write the C++ host">
+    Create `main.cpp` using the `YVMEngine` API:
+
+    ```cpp main.cpp
+    #include <iostream>
+    #include <fstream>
+    #include <sstream>
+    #include <yvm/yvm_engine.h>
+    #include <yvm/app_module.h>
+
+    // Load a file into a string
+    static std::string read_file(const char* path) {
+        std::ifstream f(path);
+        std::ostringstream ss;
+        ss << f.rdbuf();
+        return ss.str();
+    }
+
+    int main() {
+        Yoyo::YVMEngine engine;
+
+        // 1. Create an "app" module and expose a C++ function to Yoyo
+        auto app = engine.addAppModule("app");
+        app->addFunction(
+            "(msg: &str) -> void",                     // Yoyo signature
+            static_cast<void(*)(void*)>([](void* s) {  // C++ implementation
+                std::cout << Yoyo::Engine::viewString(s) << "\n";
+            }),
+            "print"                                     // name visible in Yoyo
+        );
+
+        // 2. Load Yoyo source from disk
+        std::string source = read_file("hello.yoyo");
+        auto mod = engine.addModule("hello", source);
+
+        // 3. Compile all modules
+        if (!engine.compile()) {
+            std::cerr << "Compilation failed\n";
+            return 1;
+        }
+
+        // 4. Prepare for execution (links symbols, resolves JIT)
+        engine.prepareForExecution();
+
+        // 5. Find the entry-point function
+        auto fn_opt = engine.findFunction(mod, "hello::main");
+        if (!fn_opt) {
+            std::cerr << "Function 'main' not found\n";
+            return 1;
+        }
+
+        // 6. Create a fiber (coroutine) for the function
+        auto fib = engine.createFiber(fn_opt.value());
+
+        // 7. Run the scheduler until all fibers complete
+        engine.execute();
+
+        return 0;
+    }
+    ```
+
+    | Step | API call | Purpose |
+    |---|---|---|
+    | 1 | `addAppModule` | Create a named module for C++ bindings |
+    | 1 | `addFunction` | Expose a C++ function to Yoyo scripts |
+    | 2 | `addModule` | Load a Yoyo source file |
+    | 3 | `compile` | JIT-compile all loaded modules |
+    | 4 | `prepareForExecution` | Link symbols and prepare the VM |
+    | 5 | `findFunction` | Locate a compiled function by name |
+    | 6 | `createFiber` | Create a coroutine for the function |
+    | 7 | `execute` | Run the scheduler |
+  </Step>
+
+  <Step title="Build and run">
+    ```bash
+    meson setup builddir
+    cd builddir && ninja
+    ./my-app
+    ```
+
+    Expected output:
+    ```
+    Hello from Yoyo!
+    The answer is 42
+    ```
+  </Step>
+</Steps>
+
+## What's next
+
+<CardGroup cols={3}>
+  <Card title="Building" icon="hammer" href="/building">
+    Configure LLVM vs YVM backends and build options in detail.
+  </Card>
+  <Card title="App Modules" icon="plug" href="/integration/app-modules">
+    Register enums, classes, and more complex C++ types.
+  </Card>
+  <Card title="Language Reference" icon="book" href="/language/syntax">
+    Learn the full Yoyo language syntax.
+  </Card>
+</CardGroup>
